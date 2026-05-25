@@ -137,3 +137,48 @@ class ResidualQuantizer(nn.Module):
         # bookkeeping — fine because we're in no_grad and the param has
         # requires_grad=False in EMA mode anyway.
         self.codebooks.data[level] = self.cluster_sum[level] / smoothed.unsqueeze(1)
+
+    @torch.no_grad()
+    def reinit_dead_codes(
+        self,
+        residuals: list[torch.Tensor],
+        usage_threshold: float = 1.0,
+    ) -> list[int]:
+        """Resurrect codes whose EMA usage count fell below `usage_threshold`.
+
+        For each level, replace each dead code with a random latent drawn
+        from THAT LEVEL'S residuals in the current batch — dead codes at
+        level l get reinitialized to something plausibly-level-l, not raw z.
+
+        Returns the per-level count of codes reinitialized.
+        """
+        assert self.use_ema, "reinit relies on EMA cluster_size statistics"
+        assert len(residuals) == self.L
+
+        n_reinit: list[int] = []
+        for l in range(self.L):
+            dead = self.cluster_size[l] < usage_threshold       # (K,) bool
+            n_dead = int(dead.sum().item())
+            n_reinit.append(n_dead)
+            if n_dead == 0:
+                continue
+
+            r_l = residuals[l]                                  # (B, D)
+            B = r_l.shape[0]
+            # Sample with replacement — n_dead can exceed B on tiny batches.
+            pick = torch.randint(0, B, (n_dead,), device=r_l.device)
+            new_codes = r_l[pick]                               # (n_dead, D)
+
+            # Overwrite the dead codes...
+            self.codebooks.data[l][dead] = new_codes
+
+            # ...and reset their EMA buffers, otherwise the next EMA step
+            # will immediately overwrite the new vectors with cluster_sum
+            # (still ~0) divided by cluster_size (still ~0). Setting
+            # cluster_sum = new_codes and cluster_size = 1 makes the ratio
+            # equal to the new vector — so the next update blends from
+            # the right starting point.
+            self.cluster_sum[l][dead] = new_codes
+            self.cluster_size[l][dead] = 1.0
+
+        return n_reinit
