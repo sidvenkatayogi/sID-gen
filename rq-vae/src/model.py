@@ -31,7 +31,8 @@ class RQVAEOutput:
     recon_loss: torch.Tensor
     rq_loss: torch.Tensor
     x_hat: torch.Tensor
-    indices: torch.Tensor   # (B, L) — the SIDs
+    indices: torch.Tensor              # (B, L) — the SIDs
+    residuals: list[torch.Tensor]      # length L, each (B, D) — for dead-code reinit
 
 
 class RQVAE(nn.Module):
@@ -106,4 +107,5 @@ class RQVAE(nn.Module):
             rq_loss=rq_loss,
             x_hat=x_hat,
             indices=indices,
+            residuals=residuals,
         )
