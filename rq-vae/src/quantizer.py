@@ -45,3 +45,37 @@ class ResidualQuantizer(nn.Module):
         idx = dist.argmin(dim=1)                            # (B,)
         e = cb[idx]                                         # (B, D)
         return e, idx
+
+    def forward(self, z: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, list[torch.Tensor]]:
+        """Residual quantization over L levels.
+
+        For each input z:
+            r_0 = z
+            for l in 0..L-1:
+                e_l, idx_l = nearest_code(r_l, codebook l)
+                z_hat += e_l
+                r_{l+1} = r_l - e_l
+
+        Returns:
+            z_hat:     (B, D)   sum of chosen codes across all levels
+            indices:   (B, L)   per-level chosen code indices (the SID)
+            residuals: list of L tensors (B, D) — r_l entering each level
+                       (kept so the loss can compute || r_l - sg[e_l] ||^2)
+        """
+        B, D = z.shape
+        assert D == self.D, f"latent dim {D} != expected {self.D}"
+
+        r = z
+        z_hat = torch.zeros_like(z)
+        idx_list: list[torch.Tensor] = []
+        residuals: list[torch.Tensor] = []
+
+        for l in range(self.L):
+            residuals.append(r)
+            e, idx = self._nearest_code(r, l)
+            z_hat = z_hat + e
+            r = r - e
+            idx_list.append(idx)
+
+        indices = torch.stack(idx_list, dim=1)              # (B, L)
+        return z_hat, indices, residuals
