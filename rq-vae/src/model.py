@@ -44,11 +44,20 @@ class RQVAE(nn.Module):
         codebook_size: int,
         commitment_beta: float = 0.25,
         codebook_update: str = "ema",
+        ema_decay: float = 0.99,
+        ema_eps: float = 1e-5,
     ):
         super().__init__()
         self.encoder = Encoder(input_dim, encoder_hidden, latent_dim)
         self.decoder = Decoder(latent_dim, encoder_hidden, input_dim)
-        self.quantizer = ResidualQuantizer(num_levels, codebook_size, latent_dim)
+        self.quantizer = ResidualQuantizer(
+            num_levels,
+            codebook_size,
+            latent_dim,
+            use_ema=(codebook_update == "ema"),
+            ema_decay=ema_decay,
+            ema_eps=ema_eps,
+        )
         self.beta = commitment_beta
         self.codebook_update = codebook_update
 
