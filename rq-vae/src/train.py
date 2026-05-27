@@ -1,4 +1,4 @@
-"""Train the RQ-VAE on cached MovieLens content embeddings."""
+"""Train the RQ-VAE on cached item content embeddings."""
 
 from __future__ import annotations
 
@@ -82,9 +82,8 @@ def train(cfg: dict) -> list[dict]:
     print(f"[train] device={device}")
 
     # ---- Data --------------------------------------------------------------
-    cache_dir = Path(cfg["data"].get("cache_dir", "outputs"))
-    emb_path = cache_dir / "embeddings.npy"
-    assert emb_path.exists(), f"missing {emb_path} — run `python -m src.data --download` first"
+    emb_path = Path(cfg["data"]["embeddings_path"])
+    assert emb_path.exists(), f"missing {emb_path} — run the dataloader first"
     x = torch.from_numpy(np.load(emb_path))                          # (N, input_dim)
     print(f"[train] loaded embeddings {tuple(x.shape)}")
 
@@ -212,7 +211,7 @@ def train(cfg: dict) -> list[dict]:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--config", default="config.yaml")
+    ap.add_argument("--config", required=True)
     ap.add_argument(
         "--override",
         action="append",

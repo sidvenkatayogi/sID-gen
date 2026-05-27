@@ -4,7 +4,9 @@ data:
   embedding_model: sentence-transformers/all-MiniLM-L6-v2
   input_dim: 384
   standardize: true
-  cache_dir: outputs
+  embeddings_path: outputs/ml1m_embeddings.npy
+  items_csv: outputs/ml1m_movies.csv
+  stats_path: outputs/ml1m_stats.npz
 
 model:
   encoder_hidden: [256, 128]
@@ -28,6 +30,6 @@ train:
   seed: 0
 
 output:
-  sids_csv: outputs/sids.csv
-  checkpoints_dir: outputs/checkpoints
-  metrics_json: outputs/metrics.json
+  sids_csv: outputs/ml1m_sids.csv
+  checkpoints_dir: outputs/ml1m_checkpoints
+  metrics_json: outputs/ml1m_metrics.json

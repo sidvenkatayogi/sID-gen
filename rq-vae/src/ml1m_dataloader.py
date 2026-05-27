@@ -92,8 +92,6 @@ def standardize(x: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
 
 def prepare(config: dict, download: bool) -> None:
     data_cfg = config["data"]
-    cache_dir = Path(data_cfg.get("cache_dir", "outputs"))
-    cache_dir.mkdir(parents=True, exist_ok=True)
 
     movies_path = Path(data_cfg["movies_path"])
     if download or not movies_path.exists():
@@ -115,17 +113,19 @@ def prepare(config: dict, download: bool) -> None:
         mean = np.zeros(emb.shape[1], dtype=np.float32)
         std = np.ones(emb.shape[1], dtype=np.float32)
 
-    emb_path = cache_dir / "embeddings.npy"
-    stats_path = cache_dir / "stats.npz"
-    movies_path_out = cache_dir / "movies.csv"
+    emb_path = Path(data_cfg["embeddings_path"])
+    stats_path = Path(data_cfg["stats_path"])
+    items_csv = Path(data_cfg["items_csv"])
+    for p in (emb_path, stats_path, items_csv):
+        p.parent.mkdir(parents=True, exist_ok=True)
 
     np.save(emb_path, emb_std)
     np.savez(stats_path, mean=mean, std=std)
-    df.to_csv(movies_path_out, index=False)
+    df.to_csv(items_csv, index=False)
 
     print(f"[data] wrote {emb_path}  shape={emb_std.shape} dtype={emb_std.dtype}")
     print(f"[data] wrote {stats_path}")
-    print(f"[data] wrote {movies_path_out}")
+    print(f"[data] wrote {items_csv}")
 
 
 def load_config(path: str) -> dict:
@@ -135,7 +135,7 @@ def load_config(path: str) -> dict:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--config", default="config.yaml")
+    ap.add_argument("--config", required=True)
     ap.add_argument("--download", action="store_true")
     args = ap.parse_args()
     prepare(load_config(args.config), download=args.download)

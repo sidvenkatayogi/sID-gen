@@ -1,4 +1,4 @@
-"""Load a trained RQ-VAE and emit per-movie Semantic IDs.
+"""Load a trained RQ-VAE and emit per-item Semantic IDs.
 
 Deterministic: encoder -> residual quantizer -> integer tuple. No decoder,
 no sampling. The same checkpoint + embeddings + config always produces the
@@ -62,41 +62,19 @@ def format_sid(row: list[int]) -> str:
     return "-".join(str(c) for c in row)
 
 
-def qualitative_neighbors(df: pd.DataFrame, indices: torch.Tensor, n_queries: int = 4) -> None:
-    """Print a few query movies and the others that share their level-0 code.
-
-    Smell test for whether codebook 0 is capturing something semantically
-    coherent (broad genre, era, etc).
-    """
-    print("\n[qualitative] movies sharing coarse code c_1:")
-    rng = np.random.default_rng(0)
-    queries = rng.choice(len(df), size=n_queries, replace=False)
-    for qi in queries:
-        c0 = int(indices[qi, 0].item())
-        same = (indices[:, 0] == c0).nonzero(as_tuple=True)[0].tolist()
-        # Cap at ~6 neighbors; deterministic order.
-        neighbors = same[:6]
-        print(f"\n  query: [{c0:3d}] {df.iloc[qi]['title']}  ({df.iloc[qi]['genres']})")
-        for ni in neighbors:
-            if ni == qi:
-                continue
-            print(f"    same c_1: {df.iloc[ni]['title']}  ({df.iloc[ni]['genres']})")
-
-
 def generate(cfg: dict, checkpoint: str) -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"[gen] device={device}")
 
-    cache_dir = Path(cfg["data"].get("cache_dir", "outputs"))
-    emb_path = cache_dir / "embeddings.npy"
-    movies_path = cache_dir / "movies.csv"
-    assert emb_path.exists() and movies_path.exists(), "run `python -m src.data` first"
+    emb_path = Path(cfg["data"]["embeddings_path"])
+    items_csv = Path(cfg["data"]["items_csv"])
+    assert emb_path.exists() and items_csv.exists(), "run the dataloader first"
 
     x = torch.from_numpy(np.load(emb_path)).to(device)         # (N, D)
-    df = pd.read_csv(movies_path)
-    assert len(df) == x.shape[0], "movies/embeddings length mismatch"
+    df = pd.read_csv(items_csv)
+    assert len(df) == x.shape[0], "items/embeddings length mismatch"
 
-    model, ckpt_cfg = build_model_from_checkpoint(Path(checkpoint), device)
+    model, _ = build_model_from_checkpoint(Path(checkpoint), device)
     print(f"[gen] loaded {checkpoint}  L={model.quantizer.L} K={model.quantizer.K}")
 
     indices = encode_all(model, x)                              # (N, L) on cpu
@@ -112,19 +90,18 @@ def generate(cfg: dict, checkpoint: str) -> None:
 
     # ---- Write sids.csv ---------------------------------------------------
     sid_strings = [format_sid(row) for row in indices.tolist()]
-    out_df = df[["movieId", "title", "genres"]].copy()
+    out_df = df.copy()
     out_df["sid"] = sid_strings
     out_path = Path(cfg["output"]["sids_csv"])
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_df.to_csv(out_path, index=False)
     print(f"[gen] wrote {out_path}  ({len(out_df)} rows)")
 
-    # ---- Sample print + neighbor smell test -------------------------------
-    print("\n[sample] 10 movies and their SIDs:")
+    # ---- Sample print -----------------------------------------------------
+    print("\n[sample] 10 items and their SIDs:")
     for i in range(min(10, len(out_df))):
         row = out_df.iloc[i]
-        print(f"  {row['sid']:>12}  {row['title']}  ({row['genres']})")
-    qualitative_neighbors(out_df, indices)
+        print(f"  {row['sid']:>12}  {row.to_dict()}")
 
     # ---- Update metrics.json with final inference-time numbers ------------
     metrics_path = Path(cfg["output"]["metrics_json"])
@@ -147,7 +124,7 @@ def generate(cfg: dict, checkpoint: str) -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--config", default="config.yaml")
+    ap.add_argument("--config", required=True)
     ap.add_argument("--checkpoint", default="outputs/checkpoints/best.pt")
     args = ap.parse_args()
     generate(load_config(args.config), args.checkpoint)
