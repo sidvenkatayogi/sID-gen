@@ -9,16 +9,11 @@ from pathlib import Path
 
 import numpy as np
 import torch
-import yaml
 from torch.utils.data import DataLoader, TensorDataset
 
+from .config import load_config
 from .metrics import codebook_perplexity, codebook_utilization, sid_uniqueness
 from .model import RQVAE
-
-
-def load_config(path: str) -> dict:
-    with open(path, "r") as f:
-        return yaml.safe_load(f)
 
 
 def apply_overrides(cfg: dict, overrides: list[str]) -> dict:
@@ -113,7 +108,9 @@ def train(cfg: dict) -> list[dict]:
     # In EMA mode the codebook isn't optimizer-tracked (requires_grad=False),
     # so filtering by requires_grad keeps the optimizer pointed at the right
     # tensors automatically.
-    optim = torch.optim.Adam(
+    opt_name = cfg["train"].get("optimizer", "adam").lower()
+    opt_cls = {"adam": torch.optim.Adam, "adagrad": torch.optim.Adagrad}[opt_name]
+    optim = opt_cls(
         (p for p in model.parameters() if p.requires_grad),
         lr=cfg["train"]["lr"],
     )
@@ -200,7 +197,7 @@ def train(cfg: dict) -> list[dict]:
     metrics_path.parent.mkdir(parents=True, exist_ok=True)
     with open(metrics_path, "w") as f:
         json.dump(final_metrics, f, indent=2)
-    history_path = metrics_path.parent / "history.json"
+    history_path = Path(cfg["output"]["history_json"])
     with open(history_path, "w") as f:
         json.dump(history, f, indent=2)
     print(f"[train] wrote {metrics_path}")

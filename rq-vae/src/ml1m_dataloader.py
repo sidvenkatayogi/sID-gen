@@ -15,7 +15,8 @@ from urllib.request import urlopen
 
 import numpy as np
 import pandas as pd
-import yaml
+
+from .config import load_config
 
 ML1M_URL = "https://files.grouplens.org/datasets/movielens/ml-1m.zip"
 
@@ -126,11 +127,6 @@ def prepare(config: dict, download: bool) -> None:
     print(f"[data] wrote {emb_path}  shape={emb_std.shape} dtype={emb_std.dtype}")
     print(f"[data] wrote {stats_path}")
     print(f"[data] wrote {items_csv}")
-
-
-def load_config(path: str) -> dict:
-    with open(path, "r") as f:
-        return yaml.safe_load(f)
 
 
 def main() -> None:

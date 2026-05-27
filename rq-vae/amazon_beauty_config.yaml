@@ -1,27 +1,26 @@
-name: ml1m
+name: amazon_beauty
 
 data:
-  movies_path: data/ml-1m/movies.dat
-  encoding: latin-1
-  embedding_model: sentence-transformers/all-MiniLM-L6-v2
-  input_dim: 384
+  meta_path: data/amazon/meta_Beauty.json.gz
+  embedding_model: sentence-transformers/sentence-t5-base
+  input_dim: 768
   standardize: true
 
 model:
-  encoder_hidden: [256, 128]
+  encoder_hidden: [512, 256, 128]
   latent_dim: 32
   num_levels: 3
-  codebook_size: 64
+  codebook_size: 256
   commitment_beta: 0.25
   codebook_update: ema
   ema_decay: 0.99
   ema_eps: 1.0e-5
 
 train:
-  optimizer: adam
-  lr: 1.0e-3
-  batch_size: 256
-  epochs: 300
+  optimizer: adagrad
+  lr: 0.4
+  batch_size: 1024
+  epochs: 20000
   kmeans_init: true
   reinit_enabled: true
   reinit_every: 250

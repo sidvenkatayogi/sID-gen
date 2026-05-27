@@ -14,15 +14,10 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import torch
-import yaml
 
+from .config import load_config
 from .metrics import codebook_perplexity, codebook_utilization, sid_uniqueness
 from .model import RQVAE
-
-
-def load_config(path: str) -> dict:
-    with open(path, "r") as f:
-        return yaml.safe_load(f)
 
 
 def build_model_from_checkpoint(ckpt_path: Path, device: torch.device) -> tuple[RQVAE, dict]:
