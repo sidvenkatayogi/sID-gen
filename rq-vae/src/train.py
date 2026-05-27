@@ -76,7 +76,7 @@ def compute_epoch_metrics(model: RQVAE, loader: DataLoader, device: torch.device
     }
 
 
-def train(cfg: dict) -> None:
+def train(cfg: dict) -> list[dict]:
     set_seed(cfg["train"]["seed"])
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"[train] device={device}")
@@ -119,6 +119,18 @@ def train(cfg: dict) -> None:
         lr=cfg["train"]["lr"],
     )
 
+    # ---- k-means codebook init --------------------------------------------
+    # Run the entire corpus through the (random-init) encoder and use k-means
+    # centroids of the resulting latents to seed each codebook. Using all the
+    # data (not one batch) matters: if N <= K at any level, k-means assigns
+    # one point per cluster, residuals at the next level collapse to ~0, and
+    # k-means there finds 1 distinct cluster.
+    if cfg["train"].get("kmeans_init", False):
+        with torch.no_grad():
+            z0 = model.encoder(x.to(device))
+        model.quantizer.kmeans_init(z0, random_state=cfg["train"]["seed"])
+        print(f"[train] k-means init done on full corpus ({z0.shape[0]} latents)")
+
     # ---- Checkpoint setup --------------------------------------------------
     ckpt_dir = Path(cfg["output"]["checkpoints_dir"])
     ckpt_dir.mkdir(parents=True, exist_ok=True)
@@ -126,9 +138,11 @@ def train(cfg: dict) -> None:
 
     # ---- Training loop -----------------------------------------------------
     step = 0
+    reinit_enabled = cfg["train"].get("reinit_enabled", True)
     reinit_every = cfg["train"]["reinit_every"]
     reinit_thr = cfg["train"]["reinit_usage_threshold"]
     epochs = cfg["train"]["epochs"]
+    history: list[dict] = []
 
     for epoch in range(epochs):
         model.train()
@@ -152,7 +166,7 @@ def train(cfg: dict) -> None:
             n_seen += B
 
             step += 1
-            if step % reinit_every == 0 and model.quantizer.use_ema:
+            if reinit_enabled and step % reinit_every == 0 and model.quantizer.use_ema:
                 n_reinit = model.quantizer.reinit_dead_codes(
                     out.residuals, usage_threshold=reinit_thr
                 )
@@ -161,6 +175,11 @@ def train(cfg: dict) -> None:
 
         # Epoch-end logging + eval-style metrics.
         metrics = compute_epoch_metrics(model, loader, device)
+        metrics["epoch"] = epoch + 1
+        metrics["train_loss"] = running_total / n_seen
+        metrics["train_recon"] = running_recon / n_seen
+        metrics["train_rq"] = running_rq / n_seen
+        history.append(metrics)
         print(
             f"[train] epoch {epoch+1:3d}/{epochs}  "
             f"loss={running_total/n_seen:.4f}  "
@@ -182,8 +201,13 @@ def train(cfg: dict) -> None:
     metrics_path.parent.mkdir(parents=True, exist_ok=True)
     with open(metrics_path, "w") as f:
         json.dump(final_metrics, f, indent=2)
+    history_path = metrics_path.parent / "history.json"
+    with open(history_path, "w") as f:
+        json.dump(history, f, indent=2)
     print(f"[train] wrote {metrics_path}")
+    print(f"[train] wrote {history_path}")
     print(f"[train] final: {final_metrics}")
+    return history
 
 
 def main() -> None:

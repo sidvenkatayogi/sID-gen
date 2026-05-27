@@ -139,6 +139,69 @@ class ResidualQuantizer(nn.Module):
         self.codebooks.data[level] = self.cluster_sum[level] / smoothed.unsqueeze(1)
 
     @torch.no_grad()
+    def kmeans_init(self, z: torch.Tensor, random_state: int = 0) -> None:
+        """Initialize each codebook from k-means over the residuals that
+        actually enter that level.
+
+        Sequential by necessity: codebook[l]'s input distribution is
+        r_l = z − e_0 − ... − e_{l-1}, which depends on codebooks 0..l−1
+        already being set. So we walk levels in order, fit k-means on the
+        current residual, write the centroids into codebook[l], compute
+        the resulting per-point quantization, and pass that residual to
+        the next level.
+
+        Also seeds the EMA buffers so the first EMA step doesn't wash
+        the k-means centroids back out.
+        """
+        from sklearn.cluster import KMeans
+
+        r = z
+        B = r.shape[0]
+        for l in range(self.L):
+            r_np = r.detach().cpu().numpy()
+            n_clusters = min(self.K, B)
+            km = KMeans(
+                n_clusters=n_clusters,
+                n_init=1,
+                random_state=random_state + l,
+            ).fit(r_np)
+
+            centroids = torch.tensor(
+                km.cluster_centers_, dtype=r.dtype, device=r.device
+            )                                                        # (n_clusters, D)
+            labels = torch.tensor(km.labels_, dtype=torch.long, device=r.device)  # (B,)
+
+            # If the batch had fewer rows than codes, pad the remaining
+            # slots with random rows from r (with replacement).
+            if n_clusters < self.K:
+                extra = self.K - n_clusters
+                pad_idx = torch.randint(0, B, (extra,), device=r.device)
+                pad = r[pad_idx]
+                centroids = torch.cat([centroids, pad], dim=0)       # (K, D)
+
+            self.codebooks.data[l] = centroids
+
+            # Seed EMA buffers so cluster_sum / cluster_size = centroids
+            # after the first update step. For "real" centroids we set
+            # the buffers to the k-means cluster statistics; for padded
+            # slots we set (size=1, sum=vec) so the ratio recovers the
+            # padded vector.
+            if self.use_ema:
+                counts = torch.bincount(labels, minlength=self.K).type(r.dtype)   # (K,)
+                sums = torch.zeros(self.K, self.D, dtype=r.dtype, device=r.device)
+                sums.index_add_(0, labels, r)                        # (K, D)
+                if n_clusters < self.K:
+                    counts[n_clusters:] = 1.0
+                    sums[n_clusters:] = centroids[n_clusters:]
+                self.cluster_size[l] = counts
+                self.cluster_sum[l] = sums
+
+            # Quantize r with the freshly-set codebook to produce the
+            # residual for the next level.
+            e, _ = self._nearest_code(r, l)
+            r = r - e
+
+    @torch.no_grad()
     def reinit_dead_codes(
         self,
         residuals: list[torch.Tensor],

@@ -10,7 +10,7 @@ model:
   encoder_hidden: [256, 128]
   latent_dim: 32
   num_levels: 3
-  codebook_size: 256
+  codebook_size: 64
   commitment_beta: 0.25
   codebook_update: ema
   ema_decay: 0.99
@@ -22,8 +22,9 @@ train:
   batch_size: 256
   epochs: 300
   kmeans_init: true
+  reinit_enabled: true
   reinit_every: 250
-  reinit_usage_threshold: 1
+  reinit_usage_threshold: 0.5
   seed: 0
 
 output:
