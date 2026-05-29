@@ -1,7 +1,9 @@
-*/SPEC.md
+SPEC.md
 .DS_Store
 data/
 outputs/
 __pycache__/
 *.pyc
 .venv/
+.claude/
+.pytest_cache

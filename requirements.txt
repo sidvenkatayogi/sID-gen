@@ -6,3 +6,4 @@ pyyaml
 tqdm
 scikit-learn
 matplotlib
+pytest
