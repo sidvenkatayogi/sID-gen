@@ -161,7 +161,9 @@ def build_tables(
     sequences_dir: Path | None,
     output_dir: Path,
 ) -> None:
-    project_root = Path(__file__).resolve().parent.parent
+    # This file lives at <project_root>/retrieval/scripts/build_sid_tables.py,
+    # so the project root (which holds rq-vae/) is three parents up.
+    project_root = Path(__file__).resolve().parent.parent.parent
     _add_rqvae_to_path(project_root)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
