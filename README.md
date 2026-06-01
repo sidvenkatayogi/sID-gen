@@ -23,8 +23,8 @@ decode the SID of the next item in a user's history.
 | `tiger/decode.py` | Beam search with per-position vocabulary masking |
 | `tiger/eval.py` | Recall@K and NDCG@K metrics |
 | `tiger/train.py` | Training loop (AdamW + linear-warmup-then-inv-sqrt) |
-| `scripts/preprocess_beauty.py` | 5-core reviews → train/val/test.jsonl (leave-one-out) |
-| `scripts/build_sid_tables.py` | RQ-VAE checkpoint → `item_to_sid.json` + `sid_to_item.json` |
+| `retrieval/scripts/preprocess_beauty.py` | 5-core reviews → train/val/test.jsonl (leave-one-out) |
+| `retrieval/scripts/build_sid_tables.py` | RQ-VAE checkpoint → `item_to_sid.json` + `sid_to_item.json` |
 | `retrieval/configs/beauty.yaml` | All hyperparameters (model + train) |
 | `tests/` | Vocab round-trip, dataset shapes, beam decode validity |
 
@@ -36,12 +36,12 @@ Assumes `rq-vae` has already been trained end-to-end (its
 
 ```bash
 # 1. Preprocess Beauty reviews into per-user sequences with leave-one-out split.
-python scripts/preprocess_beauty.py --download
+python retrieval/scripts/preprocess_beauty.py --download
 
 # 2. Run the trained RQ-VAE over the items in those sequences and emit the
 #    SID lookup tables. The collision-breaking c3 suffix is computed only
 #    over items that show up in the sequences.
-python scripts/build_sid_tables.py \
+python retrieval/scripts/build_sid_tables.py \
     --checkpoint rq-vae/outputs/amazon_beauty_checkpoints/best.pt \
     --items-csv  rq-vae/outputs/amazon_beauty_items.csv \
     --embeddings rq-vae/outputs/amazon_beauty_embeddings.npy \

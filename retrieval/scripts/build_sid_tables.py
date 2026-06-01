@@ -22,7 +22,7 @@ model will never see (it only encodes items that appear in the 5-core
 sequences).
 
 Usage:
-    python scripts/build_sid_tables.py \\
+    python retrieval/scripts/build_sid_tables.py \\
         --checkpoint rq-vae/outputs/amazon_beauty_checkpoints/best.pt \\
         --items-csv  rq-vae/outputs/amazon_beauty_items.csv \\
         --embeddings rq-vae/outputs/amazon_beauty_embeddings.npy \\
@@ -140,7 +140,7 @@ def collect_items_from_sequences(sequences_dir: Path) -> set[str]:
         path = sequences_dir / split
         if not path.exists():
             raise FileNotFoundError(
-                f"{path} missing — run scripts/preprocess_beauty.py first"
+                f"{path} missing — run retrieval/scripts/preprocess_beauty.py first"
             )
         with open(path, "r") as f:
             for line in f:
