@@ -3,7 +3,7 @@
 
 model:
   vocab_size: 3027            # 256*4 codeword tokens + 2000 user tokens + 3 specials
-  d_model: 128
+  d_model: 384                # =num_heads*head_dim; ~11.6M params (paper's ~13M). 128 gave only ~4.8M
   d_ff: 1024
   num_heads: 6
   head_dim: 64
@@ -26,7 +26,7 @@ train:
   beta2: 0.999
   weight_decay: 0.0
   grad_clip: 1.0
-  label_smoothing: 0.1        # counters decoder overconfidence -> invalid-SID blow-up (T5-style)
+  label_smoothing: 0.0        # paper + reference repo both use 0.0 (no smoothing)
   seed: 42
   log_every: 50
   eval_every: 5000

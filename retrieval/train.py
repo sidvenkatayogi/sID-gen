@@ -3,12 +3,7 @@
 Hyperparameters (SPEC §7):
     200K steps, batch 256, Adafactor (T5X-style, wd=0), peak LR 0.01,
     10K linear warmup -> inverse-sqrt decay, grad clip 1.0, dropout 0.1,
-    bf16 if available, seed 42.
-
-    Label smoothing is 0.1 (not the spec's 0.0): the decoder otherwise grows
-    overconfident on memorized codeword combinations, blowing up the invalid-SID
-    rate and collapsing val metrics ~25K steps in. Smoothing keeps a little mass
-    spread across the vocab and is the standard T5-style cure for this.
+    label smoothing 0.0, bf16 if available, seed 42.
 
 NOTE on the optimizer: the paper/SPEC's peak LR of 0.01 is an *Adafactor*
 learning rate (TIGER is trained in T5X, whose default optimizer is Adafactor).
