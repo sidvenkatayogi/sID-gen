@@ -26,10 +26,11 @@ train:
   beta2: 0.999
   weight_decay: 0.0
   grad_clip: 1.0
-  label_smoothing: 0.0
+  label_smoothing: 0.1        # counters decoder overconfidence -> invalid-SID blow-up (T5-style)
   seed: 42
   log_every: 50
   eval_every: 5000
+  early_stop_patience: 5      # stop after N evals w/o val NDCG@10 improvement (null = never)
   eval_batch_size: 64
   eval_beam_width: 50         # SPEC §8.1
   eval_top_k: 10              # SPEC §8.3 (top-K we actually return)

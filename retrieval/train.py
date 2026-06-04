@@ -3,7 +3,12 @@
 Hyperparameters (SPEC §7):
     200K steps, batch 256, Adafactor (T5X-style, wd=0), peak LR 0.01,
     10K linear warmup -> inverse-sqrt decay, grad clip 1.0, dropout 0.1,
-    label smoothing 0.0, bf16 if available, seed 42.
+    bf16 if available, seed 42.
+
+    Label smoothing is 0.1 (not the spec's 0.0): the decoder otherwise grows
+    overconfident on memorized codeword combinations, blowing up the invalid-SID
+    rate and collapsing val metrics ~25K steps in. Smoothing keeps a little mass
+    spread across the vocab and is the standard T5-style cure for this.
 
 NOTE on the optimizer: the paper/SPEC's peak LR of 0.01 is an *Adafactor*
 learning rate (TIGER is trained in T5X, whose default optimizer is Adafactor).
@@ -13,7 +18,9 @@ degrades). We therefore use Adafactor here, not AdamW.
 
 Validation cadence (SPEC §7.2):
     every 5K steps -- run beam decode on val set -> NDCG@10 / Recall@10.
-    Best checkpoint by val NDCG@10 is saved as `best.pt`.
+    Best checkpoint by val NDCG@10 is saved as `best.pt`. Training early-stops
+    after `early_stop_patience` evals with no val NDCG@10 improvement (config;
+    null disables it).
 
 Outputs:
     checkpoints/{best.pt, last.pt}
@@ -252,8 +259,14 @@ def train(
     beam_width = train_cfg.get("eval_beam_width", 50)
     top_k = train_cfg.get("eval_top_k", 10)
     eval_max_batches = train_cfg.get("eval_max_batches", None)   # None = full val
+    # Early stopping: halt after `patience` consecutive evals with no improvement
+    # in val NDCG@10. None disables it (train the full `total_steps`). best.pt is
+    # always the peak checkpoint regardless, so this only saves wasted compute on
+    # the post-peak overfitting tail.
+    patience = train_cfg.get("early_stop_patience", None)
 
     best_ndcg = -1.0
+    evals_since_improve = 0
     eval_history: list[dict] = []
     step = 0
     start = time.time()
@@ -328,13 +341,31 @@ def train(
 
             if metrics["ndcg@10"] > best_ndcg:
                 best_ndcg = metrics["ndcg@10"]
+                evals_since_improve = 0
                 _save_checkpoint(
                     model, optim, scheduler, cfg, step, metrics,
                     ckpt_dir / "best.pt"
                 )
                 print(f"[eval] new best NDCG@10={best_ndcg:.4f} -> saved best.pt")
+            else:
+                evals_since_improve += 1
+                print(
+                    f"[eval] no improvement ({evals_since_improve}/{patience}) "
+                    f"— best NDCG@10={best_ndcg:.4f}"
+                    if patience is not None
+                    else f"[eval] no improvement — best NDCG@10={best_ndcg:.4f}"
+                )
 
             _save_checkpoint(model, optim, scheduler, cfg, step, metrics, ckpt_dir / "last.pt")
+
+            # Early stop: peak is already preserved in best.pt, so bail out of the
+            # overfitting tail once val NDCG@10 has stalled for `patience` evals.
+            if patience is not None and evals_since_improve >= patience:
+                print(
+                    f"[train] early stop at step {step}: no val NDCG@10 improvement "
+                    f"in {patience} evals (best={best_ndcg:.4f})"
+                )
+                break
 
     # ---- Persist eval history --------------------------------------------
     with open(output_dir / "metrics.json", "w") as f:
