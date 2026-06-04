@@ -1,9 +1,15 @@
 """Training loop for the TIGER transformer.
 
 Hyperparameters (SPEC §7):
-    200K steps, batch 256, AdamW (β=(0.9,0.999), wd=0), peak LR 0.01,
+    200K steps, batch 256, Adafactor (T5X-style, wd=0), peak LR 0.01,
     10K linear warmup -> inverse-sqrt decay, grad clip 1.0, dropout 0.1,
     label smoothing 0.0, bf16 if available, seed 42.
+
+NOTE on the optimizer: the paper/SPEC's peak LR of 0.01 is an *Adafactor*
+learning rate (TIGER is trained in T5X, whose default optimizer is Adafactor).
+Adafactor clips its per-step update RMS so 0.01 is stable; AdamW at 0.01 is
+~10-30x too hot (train loss floors high and val NDCG peaks during warmup then
+degrades). We therefore use Adafactor here, not AdamW.
 
 Validation cadence (SPEC §7.2):
     every 5K steps -- run beam decode on val set -> NDCG@10 / Recall@10.
@@ -219,10 +225,15 @@ def train(
     print(f"[train] model params: {model.num_params():,}")
 
     # ---- Optimizer + schedule --------------------------------------------
-    optim = torch.optim.AdamW(
+    # Adafactor (T5X default), driven by an external linear-warmup ->
+    # inverse-sqrt LR schedule peaking at `peak_lr`. beta2_decay=-0.8 matches
+    # T5X's decay_rate=0.8; d=1.0 (default) is the update-RMS clip threshold
+    # that keeps a 0.01 LR stable. No first-moment/momentum term, matching the
+    # T5X config. The AdamW betas in the YAML are intentionally unused here.
+    optim = torch.optim.Adafactor(
         model.parameters(),
         lr=train_cfg["peak_lr"],
-        betas=(train_cfg.get("beta1", 0.9), train_cfg.get("beta2", 0.999)),
+        beta2_decay=-0.8,
         weight_decay=train_cfg.get("weight_decay", 0.0),
     )
     scheduler = make_lr_schedule(
