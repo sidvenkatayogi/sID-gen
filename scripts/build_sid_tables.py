@@ -42,6 +42,14 @@ import numpy as np
 import pandas as pd
 import torch
 
+# This file lives at <project_root>/scripts/build_sid_tables.py. When run as
+# `python scripts/build_sid_tables.py`, Python puts `scripts/` on sys.path but
+# not the project root, so `import retrieval` fails. Add the root explicitly
+# before importing the in-repo `retrieval` package.
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
+
 from retrieval.vocab import CODEBOOK_SIZE
 
 

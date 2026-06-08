@@ -21,10 +21,11 @@ train:
   total_steps: 200000
   batch_size: 256
   warmup_steps: 10000
-  peak_lr: 0.01
+  optimizer: adamw            # 'adamw' (reference recipe) or 'adafactor' (orig T5X)
+  peak_lr: 0.001              # reference uses 1e-3 AdamW; 0.01 was too hot for d_model=384
   beta1: 0.9
   beta2: 0.999
-  weight_decay: 0.0
+  weight_decay: 0.0001        # reference uses 1e-4 (was 0.0 -> no regularization)
   grad_clip: 1.0
   label_smoothing: 0.0        # paper + reference repo both use 0.0 (no smoothing)
   seed: 42
