@@ -1,4 +1,5 @@
 torch
+transformers
 sentence-transformers
 numpy
 pandas
