@@ -3,7 +3,7 @@
 
 model:
   vocab_size: 3027            # 256*4 codeword tokens + 2000 user tokens + 3 specials
-  d_model: 384                # =num_heads*head_dim; ~11.6M params (paper's ~13M). 128 gave only ~4.8M
+  d_model: 128
   d_ff: 1024
   num_heads: 6
   head_dim: 64
@@ -21,13 +21,12 @@ train:
   total_steps: 200000
   batch_size: 256
   warmup_steps: 10000
-  optimizer: adafactor        # 'adafactor' (orig T5X default) or 'adamw' (reference recipe)
-  peak_lr: 0.01               # T5X Adafactor recipe (AdamW used 1e-3)
-  beta1: 0.9                  # (unused by adafactor; kept for adamw A/B)
-  beta2: 0.999                # (unused by adafactor; kept for adamw A/B)
-  weight_decay: 0.0           # T5X Adafactor uses no weight decay (AdamW used 1e-4)
+  peak_lr: 0.01
+  beta1: 0.9
+  beta2: 0.999
+  weight_decay: 0.0
   grad_clip: 1.0
-  label_smoothing: 0.0       # re-enabled (lighter than the prior 0.1); paper/reference use 0.0
+  label_smoothing: 0.0
   seed: 42
   log_every: 50
   eval_every: 5000

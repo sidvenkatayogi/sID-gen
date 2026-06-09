@@ -1,9 +1,8 @@
 """Training loop for the TIGER transformer.
 
-Hyperparameters (config-driven, defaults follow the RQ-VAE-Recommender reference):
-    batch 256, AdamW lr 1e-3 wd 1e-4 (optimizer is selectable; the original T5X
-    Adafactor lr 0.01 recipe is still available via optimizer: adafactor),
-    10K warmup -> inverse-sqrt decay, grad clip 1.0, dropout 0.1,
+Hyperparameters (SPEC §7):
+    200K steps, batch 256, Adafactor (T5X-style, wd=0), peak LR 0.01,
+    10K linear warmup -> inverse-sqrt decay, grad clip 1.0, dropout 0.1,
     label smoothing 0.0, bf16 if available, seed 42.
 
 NOTE on the optimizer: the paper/SPEC's peak LR of 0.01 is an *Adafactor*
@@ -14,9 +13,7 @@ degrades). We therefore use Adafactor here, not AdamW.
 
 Validation cadence (SPEC §7.2):
     every 5K steps -- run beam decode on val set -> NDCG@10 / Recall@10.
-    Best checkpoint by val NDCG@10 is saved as `best.pt`. Training early-stops
-    after `early_stop_patience` evals with no val NDCG@10 improvement (config;
-    null disables it).
+    Best checkpoint by val NDCG@10 is saved as `best.pt`.
 
 Outputs:
     checkpoints/{best.pt, last.pt}
@@ -228,31 +225,17 @@ def train(
     print(f"[train] model params: {model.num_params():,}")
 
     # ---- Optimizer + schedule --------------------------------------------
-    # Two recipes, selected by train_cfg["optimizer"]:
-    #   "adamw" (default) -- matches the working RQ-VAE-Recommender reference:
-    #       AdamW, lr 1e-3, weight_decay 1e-4. At d_model=384 the model overfits
-    #       fast, and Adafactor's hot 0.01 LR makes it worse; the gentler AdamW
-    #       1e-3 + small wd is what lets the larger model actually generalize.
-    #   "adafactor" -- the original T5X-style recipe (peak LR 0.01, wd 0). Stable
-    #       only because Adafactor clips its per-step update RMS; kept for A/B.
-    opt_name = train_cfg.get("optimizer", "adamw").lower()
-    if opt_name == "adamw":
-        optim = torch.optim.AdamW(
-            model.parameters(),
-            lr=train_cfg["peak_lr"],
-            betas=(train_cfg.get("beta1", 0.9), train_cfg.get("beta2", 0.999)),
-            weight_decay=train_cfg.get("weight_decay", 0.0),
-        )
-    elif opt_name == "adafactor":
-        optim = torch.optim.Adafactor(
-            model.parameters(),
-            lr=train_cfg["peak_lr"],
-            beta2_decay=-0.8,
-            weight_decay=train_cfg.get("weight_decay", 0.0),
-        )
-    else:
-        raise ValueError(f"unknown optimizer {opt_name!r} (use 'adamw' or 'adafactor')")
-    print(f"[train] optimizer={opt_name}  lr={train_cfg['peak_lr']}  wd={train_cfg.get('weight_decay', 0.0)}")
+    # Adafactor (T5X default), driven by an external linear-warmup ->
+    # inverse-sqrt LR schedule peaking at `peak_lr`. beta2_decay=-0.8 matches
+    # T5X's decay_rate=0.8; d=1.0 (default) is the update-RMS clip threshold
+    # that keeps a 0.01 LR stable. No first-moment/momentum term, matching the
+    # T5X config. The AdamW betas in the YAML are intentionally unused here.
+    optim = torch.optim.Adafactor(
+        model.parameters(),
+        lr=train_cfg["peak_lr"],
+        beta2_decay=-0.8,
+        weight_decay=train_cfg.get("weight_decay", 0.0),
+    )
     scheduler = make_lr_schedule(
         optim, warmup_steps=train_cfg["warmup_steps"], peak_lr=train_cfg["peak_lr"]
     )

@@ -2,7 +2,7 @@ name: amazon_beauty
 
 data:
   meta_path: data/amazon/meta_Beauty.json.gz
-  embedding_model: sentence-transformers/sentence-t5-xxl
+  embedding_model: sentence-transformers/sentence-t5-base
   input_dim: 768
   standardize: true
 
