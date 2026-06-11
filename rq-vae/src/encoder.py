@@ -1,8 +1,4 @@
-"""Encoder + Decoder MLPs.
-
-x  --Encoder-->  z          (content embedding -> latent)
-z  --Decoder-->  x_hat      (quantized latent -> reconstructed embedding)
-"""
+"""Encoder + Decoder MLPs (content embedding <-> latent)."""
 
 from __future__ import annotations
 
@@ -11,8 +7,7 @@ import torch.nn as nn
 
 
 def _mlp(dims: list[int]) -> nn.Sequential:
-    """Build an MLP from a list of layer widths. ReLU between layers, no
-    activation after the final linear (we want raw latents / raw recon)."""
+    """MLP over the given layer widths: ReLU between layers, none after the last."""
     layers: list[nn.Module] = []
     for i in range(len(dims) - 1):
         layers.append(nn.Linear(dims[i], dims[i + 1]))
@@ -33,7 +28,6 @@ class Encoder(nn.Module):
 class Decoder(nn.Module):
     def __init__(self, latent_dim: int, hidden: list[int], output_dim: int):
         super().__init__()
-        # Mirror the encoder by reversing the hidden widths.
         self.net = _mlp([latent_dim, *reversed(hidden), output_dim])
 
     def forward(self, z: torch.Tensor) -> torch.Tensor:

@@ -17,10 +17,9 @@ from .model import RQVAE
 
 
 def apply_overrides(cfg: dict, overrides: list[str]) -> dict:
-    """Apply dotted overrides like 'model.num_levels=1'."""
+    """Apply dotted overrides like 'model.num_levels=1' (int -> float -> bool -> str)."""
     for o in overrides:
         key, value = o.split("=", 1)
-        # Cheap value coercion: try int -> float -> bool -> str.
         try:
             value_cast: object = int(value)
         except ValueError:
@@ -48,7 +47,6 @@ def set_seed(seed: int) -> None:
 
 @torch.no_grad()
 def compute_epoch_metrics(model: RQVAE, loader: DataLoader, device: torch.device) -> dict:
-    """Run the dataset through the model in eval mode and report metrics."""
     model.eval()
     all_idx: list[torch.Tensor] = []
     recon_losses: list[float] = []
@@ -76,7 +74,6 @@ def train(cfg: dict) -> list[dict]:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"[train] device={device}")
 
-    # ---- Data --------------------------------------------------------------
     emb_path = Path(cfg["data"]["embeddings_path"])
     assert emb_path.exists(), f"missing {emb_path} — run the dataloader first"
     x = torch.from_numpy(np.load(emb_path))                          # (N, input_dim)
@@ -90,7 +87,6 @@ def train(cfg: dict) -> list[dict]:
         drop_last=False,
     )
 
-    # ---- Model -------------------------------------------------------------
     m = cfg["model"]
     model = RQVAE(
         input_dim=cfg["data"]["input_dim"],
@@ -105,9 +101,8 @@ def train(cfg: dict) -> list[dict]:
     ).to(device)
     print(f"[train] model L={m['num_levels']}  K={m['codebook_size']}  D={m['latent_dim']}")
 
-    # In EMA mode the codebook isn't optimizer-tracked (requires_grad=False),
-    # so filtering by requires_grad keeps the optimizer pointed at the right
-    # tensors automatically.
+    # In EMA mode the codebook has requires_grad=False, so filtering keeps the
+    # optimizer pointed only at the encoder/decoder weights.
     opt_name = cfg["train"].get("optimizer", "adam").lower()
     opt_cls = {"adam": torch.optim.Adam, "adagrad": torch.optim.Adagrad}[opt_name]
     optim = opt_cls(
@@ -115,24 +110,18 @@ def train(cfg: dict) -> list[dict]:
         lr=cfg["train"]["lr"],
     )
 
-    # ---- k-means codebook init --------------------------------------------
-    # Run the entire corpus through the (random-init) encoder and use k-means
-    # centroids of the resulting latents to seed each codebook. Using all the
-    # data (not one batch) matters: if N <= K at any level, k-means assigns
-    # one point per cluster, residuals at the next level collapse to ~0, and
-    # k-means there finds 1 distinct cluster.
+    # k-means init over the full corpus (not one batch): if N <= K at any level,
+    # next-level residuals collapse to ~0 and k-means there finds one cluster.
     if cfg["train"].get("kmeans_init", False):
         with torch.no_grad():
             z0 = model.encoder(x.to(device))
         model.quantizer.kmeans_init(z0, random_state=cfg["train"]["seed"])
         print(f"[train] k-means init done on full corpus ({z0.shape[0]} latents)")
 
-    # ---- Checkpoint setup --------------------------------------------------
     ckpt_dir = Path(cfg["output"]["checkpoints_dir"])
     ckpt_dir.mkdir(parents=True, exist_ok=True)
     best_recon = float("inf")
 
-    # ---- Training loop -----------------------------------------------------
     step = 0
     reinit_enabled = cfg["train"].get("reinit_enabled", True)
     reinit_every = cfg["train"]["reinit_every"]
@@ -169,7 +158,6 @@ def train(cfg: dict) -> list[dict]:
                 if any(n > 0 for n in n_reinit):
                     print(f"[train] step {step}: reinit {n_reinit} dead codes per level")
 
-        # Epoch-end logging + eval-style metrics.
         metrics = compute_epoch_metrics(model, loader, device)
         metrics["epoch"] = epoch + 1
         metrics["train_loss"] = running_total / n_seen
@@ -190,7 +178,6 @@ def train(cfg: dict) -> list[dict]:
             best_recon = metrics["recon_loss"]
             torch.save({"model": model.state_dict(), "config": cfg}, ckpt_dir / "best.pt")
 
-    # Final checkpoint + final metrics dump.
     torch.save({"model": model.state_dict(), "config": cfg}, ckpt_dir / "final.pt")
     final_metrics = compute_epoch_metrics(model, loader, device)
     metrics_path = Path(cfg["output"]["metrics_json"])

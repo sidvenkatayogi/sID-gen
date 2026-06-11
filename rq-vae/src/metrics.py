@@ -6,11 +6,7 @@ import torch
 
 
 def codebook_utilization(indices: torch.Tensor, codebook_size: int) -> list[float]:
-    """Fraction of codes used at least once, per level.
-
-    indices: (N, L) integer tensor of chosen code IDs across the dataset.
-    Returns a list of L floats in [0, 1].
-    """
+    """Fraction of codes used at least once, per level. `indices` is (N, L)."""
     L = indices.shape[1]
     out: list[float] = []
     for l in range(L):
@@ -20,18 +16,13 @@ def codebook_utilization(indices: torch.Tensor, codebook_size: int) -> list[floa
 
 
 def codebook_perplexity(indices: torch.Tensor, codebook_size: int) -> list[float]:
-    """Perplexity = exp(entropy of code-usage distribution), per level.
-
-    Range is [1, K]. 1 means all assignments collapsed to a single code;
-    K means perfectly uniform usage. A healthy run has perplexity well
-    above 1 (but doesn't need to hit K — natural data has structure).
-    """
+    """exp(entropy of code-usage), per level. Range [1, K]: 1 = collapsed to one
+    code, K = perfectly uniform."""
     L = indices.shape[1]
     out: list[float] = []
     for l in range(L):
         counts = torch.bincount(indices[:, l], minlength=codebook_size).float()
         p = counts / counts.sum().clamp(min=1)
-        # Shannon entropy, with 0 log 0 := 0.
         nonzero = p > 0
         entropy = -(p[nonzero] * p[nonzero].log()).sum()
         out.append(float(entropy.exp().item()))
@@ -39,12 +30,8 @@ def codebook_perplexity(indices: torch.Tensor, codebook_size: int) -> list[float
 
 
 def sid_uniqueness(indices: torch.Tensor) -> tuple[float, int]:
-    """Fraction of rows with a unique SID tuple, plus the collision count.
-
-    indices: (N, L). Returns (unique_fraction, num_duplicates).
-    """
+    """(unique_fraction, num_duplicates) over the SID tuples. `indices` is (N, L)."""
     N = indices.shape[0]
-    # Convert each row to a tuple of ints to use Python set semantics.
     seen: set[tuple[int, ...]] = set()
     dupes = 0
     for row in indices.tolist():

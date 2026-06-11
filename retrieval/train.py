@@ -1,24 +1,15 @@
 """Training loop for the TIGER transformer.
 
-Hyperparameters (SPEC §7):
-    200K steps, batch 256, Adafactor (T5X-style, wd=0), peak LR 0.01,
-    10K linear warmup -> inverse-sqrt decay, grad clip 1.0, dropout 0.1,
-    label smoothing 0.0, bf16 if available, seed 42.
+Defaults (see `configs/beauty.yaml`): 200K steps, batch 256, Adafactor with a
+linear-warmup -> inverse-sqrt LR schedule peaking at 0.01, grad clip 1.0.
 
-NOTE on the optimizer: the paper/SPEC's peak LR of 0.01 is an *Adafactor*
-learning rate (TIGER is trained in T5X, whose default optimizer is Adafactor).
-Adafactor clips its per-step update RMS so 0.01 is stable; AdamW at 0.01 is
-~10-30x too hot (train loss floors high and val NDCG peaks during warmup then
-degrades). We therefore use Adafactor here, not AdamW.
+The peak LR of 0.01 is an *Adafactor* learning rate (TIGER is trained in T5X,
+whose default optimizer is Adafactor). Adafactor clips its per-step update RMS,
+so 0.01 is stable; AdamW at 0.01 is far too hot.
 
-Validation cadence (SPEC §7.2):
-    every 5K steps -- run beam decode on val set -> NDCG@10 / Recall@10.
-    Best checkpoint by val NDCG@10 is saved as `best.pt`.
-
-Outputs:
-    checkpoints/{best.pt, last.pt}
-    metrics.json (final + per-eval-step)
-    val_curve.png (NDCG@10 vs step)
+Validation runs beam decode on the val split every `eval_every` steps; the best
+checkpoint by val NDCG@10 is saved as `best.pt`. Outputs land in `output_dir`:
+`checkpoints/{best,last}.pt`, `metrics.json`, `val_curve.png`.
 """
 
 from __future__ import annotations
@@ -43,9 +34,6 @@ from retrieval.model import TigerConfig, TigerTransformer
 from retrieval.vocab import PAD_ID
 
 
-# ----------------------------------------------------------------------------
-# Utilities
-# ----------------------------------------------------------------------------
 def set_seed(seed: int) -> None:
     random.seed(seed)
     np.random.seed(seed)
@@ -59,32 +47,22 @@ def make_lr_schedule(
     peak_lr: float,
 ) -> torch.optim.lr_scheduler.LambdaLR:
     """Linear warmup to peak_lr over `warmup_steps`, then inverse-sqrt decay.
-
-    The lambda multiplies the base LR set on the optimizer. We set base LR
-    to `peak_lr` so warmup is just `step / warmup_steps`.
-    """
+    Base LR is set to `peak_lr`, so the warmup factor is just step/warmup."""
     def lr_lambda(step: int) -> float:
         if step < warmup_steps:
             return float(step) / float(max(1, warmup_steps))
-        # After warmup: factor decays as sqrt(warmup / step), so at step
-        # =warmup the factor is 1.0 and shrinks from there.
         return math.sqrt(warmup_steps / step)
 
     return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lr_lambda)
 
 
 def pick_amp_dtype() -> torch.dtype | None:
-    """bf16 if the device supports it; otherwise None (fp32)."""
+    """bf16 on CUDA when supported, else None (fp32)."""
     if torch.cuda.is_available() and torch.cuda.is_bf16_supported():
         return torch.bfloat16
-    # MPS (Apple Silicon) supports bf16 in recent torch but autocast is touchy
-    # on it. fp32 is fine for a model this small.
     return None
 
 
-# ----------------------------------------------------------------------------
-# Validation: beam-decode the val split and compute retrieval metrics.
-# ----------------------------------------------------------------------------
 @torch.no_grad()
 def validate(
     model: TigerTransformer,
@@ -95,11 +73,8 @@ def validate(
     top_k: int,
     max_batches: int | None = None,
 ) -> dict[str, float]:
-    """Run beam decode on the val set, return Recall@k / NDCG@k / invalid@k.
-
-    `max_batches=None` runs the whole set; pass an integer to subsample
-    during long training runs.
-    """
+    """Beam-decode the val set and return Recall@k / NDCG@k / invalid@k.
+    `max_batches=None` runs the whole set; pass an int to subsample."""
     model.eval()
     all_pred_items: list[list[str | None]] = []
     all_gold_items: list[str] = []
@@ -113,9 +88,7 @@ def validate(
         enc_mask = batch["encoder_attn_mask"].to(device)
         target_sid = batch["target_sid"]                       # (B, 4) on cpu
 
-        # beam_decode -> for each row, top-`beam_width` SID tuples + scores.
         pred_sids = beam_decode(model, enc_ids, enc_mask, beam_width=beam_width)
-        # pred_sids: list of length B, each a list of (sid_tuple, score) sorted desc
 
         for b in range(enc_ids.size(0)):
             beams = pred_sids[b]
@@ -131,33 +104,22 @@ def validate(
                 if len(top_items) >= top_k:
                     break
 
-            # If we couldn't fill top_k from this many beams, pad with None
-            # so per-rank metric calcs still work — they just won't hit.
             while len(top_items) < top_k:
                 top_items.append(None)
 
             invalid_count += row_invalid
             all_pred_items.append(top_items)
 
-            # Reverse-lookup gold item from its SID. We saved target_sid on
-            # cpu so this is just a dict lookup per row.
             gold_key = "_".join(str(c) for c in target_sid[b].tolist())
             all_gold_items.append(sid_to_item[gold_key])
             seen += 1
 
     metrics = compute_retrieval_metrics(all_pred_items, all_gold_items, ks=(5, 10))
-    # Invalid rate: invalid beams / total beams visited, averaged across rows.
-    # (Each row visited beam_width beams; not all were tried since we early-exit
-    # once top_k valid are found. Using `invalid_count / (seen * top_k)` is a
-    # decent proxy that doesn't require tracking per-row beam visits.)
     metrics["invalid_rate"] = invalid_count / max(seen, 1) / top_k
     model.train()
     return metrics
 
 
-# ----------------------------------------------------------------------------
-# Training
-# ----------------------------------------------------------------------------
 def train(
     cfg: dict,
     data_dir: Path,
@@ -165,15 +127,10 @@ def train(
 ) -> None:
     train_cfg = cfg["train"]
     set_seed(train_cfg["seed"])
-    device = torch.device(
-        "cuda" if torch.cuda.is_available()
-        else "mps" if torch.backends.mps.is_available()
-        else "cpu"
-    )
+    device = pick_device()
     amp_dtype = pick_amp_dtype() if device.type == "cuda" else None
     print(f"[train] device={device}  amp_dtype={amp_dtype}")
 
-    # ---- Data -------------------------------------------------------------
     item_to_sid_path = data_dir / "item_to_sid.json"
     sid_to_item_path = data_dir / "sid_to_item.json"
     with open(sid_to_item_path) as f:
@@ -183,8 +140,6 @@ def train(
     val_ds = TigerSequenceDataset(data_dir / "processed/val.jsonl", item_to_sid_path)
     print(f"[train] train={len(train_ds)}  val={len(val_ds)}")
 
-    # Workers help on Linux/CUDA; on macOS/MPS keep it single-process to
-    # avoid the fork-vs-spawn footgun. PyTorch defaults are fine for now.
     train_loader = DataLoader(
         train_ds,
         batch_size=train_cfg["batch_size"],
@@ -202,7 +157,6 @@ def train(
         collate_fn=collate,
     )
 
-    # ---- Model ------------------------------------------------------------
     mcfg = cfg["model"]
     model_config = TigerConfig(
         vocab_size=mcfg["vocab_size"],
@@ -224,12 +178,9 @@ def train(
     model = TigerTransformer(model_config).to(device)
     print(f"[train] model params: {model.num_params():,}")
 
-    # ---- Optimizer + schedule --------------------------------------------
-    # Adafactor (T5X default), driven by an external linear-warmup ->
-    # inverse-sqrt LR schedule peaking at `peak_lr`. beta2_decay=-0.8 matches
-    # T5X's decay_rate=0.8; d=1.0 (default) is the update-RMS clip threshold
-    # that keeps a 0.01 LR stable. No first-moment/momentum term, matching the
-    # T5X config. The AdamW betas in the YAML are intentionally unused here.
+    # Adafactor (T5X default): no momentum, beta2_decay=-0.8 matches T5X's
+    # decay_rate=0.8, and the update-RMS clip keeps a 0.01 LR stable. The AdamW
+    # betas in the YAML are unused here.
     optim = torch.optim.Adafactor(
         model.parameters(),
         lr=train_cfg["peak_lr"],
@@ -240,7 +191,6 @@ def train(
         optim, warmup_steps=train_cfg["warmup_steps"], peak_lr=train_cfg["peak_lr"]
     )
 
-    # ---- Train state ------------------------------------------------------
     output_dir.mkdir(parents=True, exist_ok=True)
     ckpt_dir = output_dir / "checkpoints"
     ckpt_dir.mkdir(parents=True, exist_ok=True)
@@ -251,11 +201,9 @@ def train(
     grad_clip = train_cfg.get("grad_clip", 1.0)
     beam_width = train_cfg.get("eval_beam_width", 50)
     top_k = train_cfg.get("eval_top_k", 10)
-    eval_max_batches = train_cfg.get("eval_max_batches", None)   # None = full val
-    # Early stopping: halt after `patience` consecutive evals with no improvement
-    # in val NDCG@10. None disables it (train the full `total_steps`). best.pt is
-    # always the peak checkpoint regardless, so this only saves wasted compute on
-    # the post-peak overfitting tail.
+    eval_max_batches = train_cfg.get("eval_max_batches", None)
+    # Early stop after `patience` consecutive evals without val NDCG@10
+    # improvement (None disables). best.pt is always the peak regardless.
     patience = train_cfg.get("early_stop_patience", None)
 
     best_ndcg = -1.0
@@ -351,8 +299,6 @@ def train(
 
             _save_checkpoint(model, optim, scheduler, cfg, step, metrics, ckpt_dir / "last.pt")
 
-            # Early stop: peak is already preserved in best.pt, so bail out of the
-            # overfitting tail once val NDCG@10 has stalled for `patience` evals.
             if patience is not None and evals_since_improve >= patience:
                 print(
                     f"[train] early stop at step {step}: no val NDCG@10 improvement "
@@ -360,7 +306,6 @@ def train(
                 )
                 break
 
-    # ---- Persist eval history --------------------------------------------
     with open(output_dir / "metrics.json", "w") as f:
         json.dump(
             {
@@ -373,7 +318,6 @@ def train(
         )
     print(f"[train] wrote {output_dir/'metrics.json'}")
 
-    # Best-effort plot: skip silently if matplotlib isn't around.
     try:
         import matplotlib
 
@@ -416,16 +360,86 @@ def _save_checkpoint(
     )
 
 
+def pick_device() -> torch.device:
+    return torch.device(
+        "cuda" if torch.cuda.is_available()
+        else "mps" if torch.backends.mps.is_available()
+        else "cpu"
+    )
+
+
+def train_from_config(
+    config_path: str | Path,
+    data_dir: str | Path = "data",
+    output_dir: str | Path = "outputs/tiger_beauty",
+    quick: bool = False,
+) -> dict:
+    """Load a YAML config and run training. `quick=True` trims steps for a smoke
+    test that will not match the paper. Returns the (possibly trimmed) config."""
+    with open(config_path, "r") as f:
+        cfg = yaml.safe_load(f)
+    if quick:
+        cfg["train"].update(
+            total_steps=4000, warmup_steps=500, eval_every=1000, eval_max_batches=20
+        )
+    train(cfg, Path(data_dir), Path(output_dir))
+    return cfg
+
+
+def build_model_from_checkpoint(
+    ckpt_path: str | Path, device: torch.device
+) -> tuple[TigerTransformer, dict]:
+    """Rebuild a TigerTransformer from a training checkpoint (which stores its
+    own config). Returns (model in eval mode, raw checkpoint dict)."""
+    ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
+    m = ckpt["config"]["model"]
+    model = TigerTransformer(TigerConfig(
+        vocab_size=m["vocab_size"], d_model=m["d_model"], d_ff=m["d_ff"],
+        num_heads=m["num_heads"], head_dim=m["head_dim"],
+        num_encoder_layers=m["num_encoder_layers"], num_decoder_layers=m["num_decoder_layers"],
+        dropout=m["dropout"], max_enc_len=m["max_enc_len"], max_dec_len=m["max_dec_len"],
+        pad_id=PAD_ID, rel_num_buckets=m.get("rel_num_buckets", 32),
+        rel_max_distance=m.get("rel_max_distance", 128),
+        tie_embeddings=m.get("tie_embeddings", True),
+        initializer_range=m.get("initializer_range", 0.02),
+    )).to(device)
+    model.load_state_dict(ckpt["model"])
+    model.eval()
+    return model, ckpt
+
+
+def evaluate_checkpoint(
+    ckpt_path: str | Path,
+    data_dir: str | Path = "data",
+    split: str = "test",
+    beam_width: int = 50,
+    top_k: int = 10,
+    eval_batch_size: int = 64,
+    max_batches: int | None = None,
+) -> dict[str, float]:
+    """Beam-decode `{split}.jsonl` with a saved checkpoint and return metrics."""
+    device = pick_device()
+    data_dir = Path(data_dir)
+    model, _ = build_model_from_checkpoint(ckpt_path, device)
+    with open(data_dir / "sid_to_item.json") as f:
+        sid_to_item = json.load(f)
+    ds = TigerSequenceDataset(
+        data_dir / "processed" / f"{split}.jsonl", data_dir / "item_to_sid.json"
+    )
+    loader = DataLoader(ds, batch_size=eval_batch_size, shuffle=False, collate_fn=collate)
+    return validate(
+        model, loader, sid_to_item, device=device,
+        beam_width=beam_width, top_k=top_k, max_batches=max_batches,
+    )
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", type=Path, default=Path("retrieval/configs/beauty.yaml"))
     ap.add_argument("--data-dir", type=Path, default=Path("data"))
     ap.add_argument("--output-dir", type=Path, default=Path("outputs/tiger_beauty"))
     args = ap.parse_args()
-
-    with open(args.config, "r") as f:
-        cfg = yaml.safe_load(f)
-    train(cfg, args.data_dir, args.output_dir)
+    train_from_config(args.config, args.data_dir, args.output_dir)
 
 
 if __name__ == "__main__":

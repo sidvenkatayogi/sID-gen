@@ -1,6 +1,6 @@
 """Token vocabulary, SID encoding, and user-ID hashing.
 
-The decoder emits tokens from a single flat 3027-vocab. Layout (SPEC §4):
+The decoder emits tokens from a single flat 3027-token vocabulary:
 
     [   0,  256)  256  codeword tokens for SID position 0  (c0)
     [ 256,  512)  256  codeword tokens for SID position 1  (c1)
@@ -9,14 +9,8 @@ The decoder emits tokens from a single flat 3027-vocab. Layout (SPEC §4):
     [1024, 3024) 2000  user-ID tokens (hashed buckets)
     [3024, 3027)    3  PAD, BOS, EOS
 
-Per-position offsetting is the trick that lets the same integer (e.g. `5`)
-appear at any of the four SID positions without confusing the model — the
-embedding rows for `(pos=0, code=5)`, `(pos=1, code=5)`, etc. are distinct
-slots in the table. The paper uses this exact scheme.
-
-User IDs are hashed into 2000 buckets via MD5 (NOT Python's built-in
-`hash()` — that is salted per-process and would change between training and
-inference runs).
+Per-position offsetting lets the same code integer appear at any of the four
+SID positions with a distinct embedding row.
 """
 
 from __future__ import annotations
@@ -24,9 +18,8 @@ from __future__ import annotations
 import hashlib
 from typing import Iterable
 
-# ---- Constants (must match SPEC §4) -----------------------------------------
-CODEBOOK_SIZE: int = 256         # K per RQ-VAE level
-NUM_SID_POSITIONS: int = 4       # c0, c1, c2 (RQ-VAE) + c3 (collision suffix)
+CODEBOOK_SIZE: int = 256
+NUM_SID_POSITIONS: int = 4        # c0, c1, c2 (RQ-VAE) + c3 (collision suffix)
 NUM_USER_BUCKETS: int = 2000
 
 CODEWORD_VOCAB: int = CODEBOOK_SIZE * NUM_SID_POSITIONS  # 1024
@@ -40,13 +33,8 @@ EOS_ID: int = SPECIAL_TOKEN_START + 2       # 3026
 VOCAB_SIZE: int = SPECIAL_TOKEN_START + 3   # 3027
 
 
-# ---- SID <-> token round-trip ----------------------------------------------
 def sid_to_tokens(sid: Iterable[int]) -> list[int]:
-    """Convert a length-4 SID tuple `(c0, c1, c2, c3)` to its 4-token form.
-
-    Token at position p = `CODEBOOK_SIZE * p + code`. The offset is what
-    keeps positions distinguishable inside a single embedding table.
-    """
+    """Convert a length-4 SID tuple to its 4-token form (token = 256*p + code)."""
     sid_list = list(sid)
     assert len(sid_list) == NUM_SID_POSITIONS, (
         f"SID must have {NUM_SID_POSITIONS} codes, got {len(sid_list)}"
@@ -61,13 +49,7 @@ def sid_to_tokens(sid: Iterable[int]) -> list[int]:
 
 
 def tokens_to_sid(tokens: Iterable[int]) -> tuple[int, int, int, int]:
-    """Inverse of `sid_to_tokens`. Subtracts the position offset.
-
-    Tolerant of any tokens in `[0, 1024)`; does not validate that each token
-    is in its expected per-position range — beam search guarantees that by
-    masking, and downstream code may want to inspect raw decoded tokens for
-    debugging.
-    """
+    """Inverse of `sid_to_tokens`: subtract the per-position offset."""
     tok_list = list(tokens)
     assert len(tok_list) == NUM_SID_POSITIONS, (
         f"need {NUM_SID_POSITIONS} tokens, got {len(tok_list)}"
@@ -80,39 +62,32 @@ def tokens_to_sid(tokens: Iterable[int]) -> tuple[int, int, int, int]:
     return codes  # type: ignore[return-value]
 
 
-# ---- Per-position decode mask ----------------------------------------------
 def position_token_range(position: int) -> tuple[int, int]:
     """`[start, end)` of valid token IDs at SID position `position` (0..3)."""
     assert 0 <= position < NUM_SID_POSITIONS
     return (CODEBOOK_SIZE * position, CODEBOOK_SIZE * (position + 1))
 
 
-# ---- User-ID hashing (stable across processes) -----------------------------
 def user_token(user_id: str) -> int:
-    """Map a user_id string to a token in `[USER_TOKEN_START, SPECIAL_TOKEN_START)`.
+    """Map a user_id to a token in `[USER_TOKEN_START, SPECIAL_TOKEN_START)`.
 
-    MD5 is used instead of Python's built-in `hash` because PYTHONHASHSEED
-    randomizes the latter per process — same string would map to different
-    buckets across runs and break checkpoint reuse.
+    MD5 (not Python's built-in `hash`, which is salted per process) keeps the
+    bucket stable across training and inference runs.
     """
     digest = hashlib.md5(user_id.encode("utf-8")).digest()
-    # 8 bytes is plenty of entropy for a mod-2000.
     bucket = int.from_bytes(digest[:8], "big") % NUM_USER_BUCKETS
     return USER_TOKEN_START + bucket
 
 
-# ---- Sequence assembly helpers ---------------------------------------------
 def build_encoder_input(
     user_id: str,
     history_sids: list[tuple[int, int, int, int]],
     pad_to: int,
 ) -> tuple[list[int], list[int]]:
-    """Assemble the encoder input from §5.1.
+    """Assemble `[user_tok, sid(i_1)[0..3], ..., sid(i_h)[0..3]]`, right-padded.
 
-        [user_tok(u), sid(i_1)[0..3], sid(i_2)[0..3], ..., sid(i_h)[0..3]]
-
-    Returns `(input_ids, attention_mask)` both of length `pad_to`. Right-pad
-    with PAD; the mask is 1 on real positions, 0 on padding.
+    Returns `(input_ids, attention_mask)`, both length `pad_to`; the mask is 1
+    on real positions and 0 on padding.
     """
     toks: list[int] = [user_token(user_id)]
     for sid in history_sids:
@@ -130,17 +105,12 @@ def build_encoder_input(
 def build_decoder_io(
     target_sid: tuple[int, int, int, int],
 ) -> tuple[list[int], list[int]]:
-    """Decoder input / target for predicting one SID (§5.2).
+    """Teacher-forcing decoder input/target for one SID:
 
-        decoder_input  = [BOS, c0, c1, c2, c3]      # length 5
-        decoder_target = [c0, c1, c2, c3, EOS]      # length 5
-
-    Standard teacher-forcing shift: position `t` in input predicts position
-    `t` in target. The spec text drops `c3` from the input but says length
-    is 5 — we follow the length-5 reading, which is the only consistent
-    teacher-forcing interpretation.
+        decoder_input  = [BOS, c0, c1, c2, c3]
+        decoder_target = [c0, c1, c2, c3, EOS]
     """
-    tgt_toks = sid_to_tokens(target_sid)              # 4 codeword tokens
-    decoder_input = [BOS_ID, *tgt_toks]               # BOS + 4 = 5
-    decoder_target = [*tgt_toks, EOS_ID]              # 4 + EOS = 5
+    tgt_toks = sid_to_tokens(target_sid)
+    decoder_input = [BOS_ID, *tgt_toks]
+    decoder_target = [*tgt_toks, EOS_ID]
     return decoder_input, decoder_target

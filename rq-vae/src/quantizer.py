@@ -1,9 +1,8 @@
 """Residual vector quantizer.
 
-L codebooks, each holding K vectors of dim D. A latent z is quantized by
-walking the levels: at each level pick the nearest code, subtract it, pass
-the residual to the next level. L=1 is plain VQ (no residual at all, since
-the loop runs once).
+L codebooks, each K vectors of dim D. A latent z is quantized by walking the
+levels: at each level pick the nearest code, subtract it, pass the residual to
+the next level. L=1 is plain VQ.
 """
 
 from __future__ import annotations
@@ -31,55 +30,33 @@ class ResidualQuantizer(nn.Module):
         self.ema_decay = ema_decay
         self.ema_eps = ema_eps
 
-        # One codebook per level, shape (K, D). Stored as a single (L, K, D)
-        # tensor for cleanliness. Random init for now — we'll replace with
-        # k-means init in a later step.
+        # One codebook per level, stored as a single (L, K, D) tensor. Random
+        # init; kmeans_init() overwrites it before training when enabled.
         codebooks = torch.randn(num_levels, codebook_size, latent_dim) * 0.01
         self.codebooks = nn.Parameter(codebooks, requires_grad=not use_ema)
 
-        # EMA statistics. Buffers (not Parameters) — they're state, not
-        # learned. They move with the module (cpu/gpu, state_dict) but the
-        # optimizer ignores them.
+        # EMA statistics are buffers (state, not learned parameters).
         if use_ema:
             self.register_buffer("cluster_size", torch.zeros(num_levels, codebook_size))
             self.register_buffer("cluster_sum", torch.zeros(num_levels, codebook_size, latent_dim))
 
     def _nearest_code(self, r: torch.Tensor, level: int) -> tuple[torch.Tensor, torch.Tensor]:
-        """For each row of r (B, D), find its nearest entry in codebook[level].
-
-        Returns:
-            e:   (B, D) the selected code vectors
-            idx: (B,)   the chosen index in [0, K)
-        """
+        """Nearest code in codebook[level] for each row of r (B, D).
+        Returns (selected codes (B, D), chosen indices (B,))."""
         cb = self.codebooks[level]                          # (K, D)
-
-        # Squared Euclidean distance: ||r - c||^2 = ||r||^2 - 2 r·c + ||c||^2
-        # We can drop ||r||^2 (constant per row) for argmin, but we keep the
-        # full expression — clearer, and the cost is negligible at K=256.
+        # ||r - c||^2 = ||r||^2 - 2 r·c + ||c||^2
         r2 = (r * r).sum(dim=1, keepdim=True)               # (B, 1)
         c2 = (cb * cb).sum(dim=1)                           # (K,)
         rc = r @ cb.t()                                     # (B, K)
         dist = r2 - 2 * rc + c2                             # (B, K)
-
         idx = dist.argmin(dim=1)                            # (B,)
-        e = cb[idx]                                         # (B, D)
-        return e, idx
+        return cb[idx], idx
 
     def forward(self, z: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, list[torch.Tensor]]:
-        """Residual quantization over L levels.
-
-        For each input z:
-            r_0 = z
-            for l in 0..L-1:
-                e_l, idx_l = nearest_code(r_l, codebook l)
-                z_hat += e_l
-                r_{l+1} = r_l - e_l
-
-        Returns:
+        """Residual quantization over L levels. Returns:
             z_hat:     (B, D)   sum of chosen codes across all levels
             indices:   (B, L)   per-level chosen code indices (the SID)
-            residuals: list of L tensors (B, D) — r_l entering each level
-                       (kept so the loss can compute || r_l - sg[e_l] ||^2)
+            residuals: list of L tensors (B, D), r_l entering each level
         """
         B, D = z.shape
         assert D == self.D, f"latent dim {D} != expected {self.D}"
@@ -103,55 +80,29 @@ class ResidualQuantizer(nn.Module):
 
     @torch.no_grad()
     def _ema_update(self, r: torch.Tensor, idx: torch.Tensor, level: int) -> None:
-        """One EMA step for codebook[level], given this batch's assignments.
-
-        We track two running statistics per code:
-            cluster_size[k]  — soft count of how often code k gets picked
-            cluster_sum[k]   — running vector sum of residuals assigned to k
-
-        New code value is cluster_sum[k] / cluster_size[k] — i.e. the mean
-        residual that landed on it. Laplace smoothing keeps unused codes
-        from blowing up to NaN (their counts approach 0).
-        """
-        # Per-code assignment matrix this batch: one_hot[b, k] = 1 iff
-        # input b was assigned to code k.
+        """One EMA step for codebook[level]. Tracks per-code cluster_size (soft
+        count) and cluster_sum (residual sum); the new code value is their
+        Laplace-smoothed ratio (the mean residual that landed on it)."""
         one_hot = F.one_hot(idx, num_classes=self.K).type(r.dtype)   # (B, K)
-
-        # n_k = how many inputs landed on code k this batch.
         n = one_hot.sum(dim=0)                                       # (K,)
-        # m_k = sum of all residuals assigned to code k this batch.
-        #   one_hot.T : (K, B),  r : (B, D)  ->  (K, D)
         m = one_hot.t() @ r                                          # (K, D)
 
-        # Exponential moving average: new = decay * old + (1 - decay) * batch.
-        # In-place ops (mul_, add_) avoid allocating a new buffer each step.
         self.cluster_size[level].mul_(self.ema_decay).add_(n, alpha=1 - self.ema_decay)
         self.cluster_sum[level].mul_(self.ema_decay).add_(m, alpha=1 - self.ema_decay)
 
-        # Laplace-smoothed counts: prevents div-by-zero for codes that
-        # haven't been picked yet (cluster_size near 0).
+        # Laplace smoothing prevents div-by-zero for never-picked codes.
         N = self.cluster_size[level].sum()
         smoothed = (self.cluster_size[level] + self.ema_eps) / (N + self.K * self.ema_eps) * N
-
-        # Overwrite the codebook entries in place. .data sidesteps autograd
-        # bookkeeping — fine because we're in no_grad and the param has
-        # requires_grad=False in EMA mode anyway.
         self.codebooks.data[level] = self.cluster_sum[level] / smoothed.unsqueeze(1)
 
     @torch.no_grad()
     def kmeans_init(self, z: torch.Tensor, random_state: int = 0) -> None:
-        """Initialize each codebook from k-means over the residuals that
-        actually enter that level.
+        """Seed each codebook from k-means over the residuals entering that level.
 
-        Sequential by necessity: codebook[l]'s input distribution is
-        r_l = z − e_0 − ... − e_{l-1}, which depends on codebooks 0..l−1
-        already being set. So we walk levels in order, fit k-means on the
-        current residual, write the centroids into codebook[l], compute
-        the resulting per-point quantization, and pass that residual to
-        the next level.
-
-        Also seeds the EMA buffers so the first EMA step doesn't wash
-        the k-means centroids back out.
+        Sequential by necessity: codebook[l]'s input distribution depends on
+        codebooks 0..l-1, so we fit level by level, quantize, and pass the
+        residual on. Also seeds the EMA buffers so the first EMA step doesn't
+        wash out the centroids.
         """
         from sklearn.cluster import KMeans
 
@@ -171,8 +122,7 @@ class ResidualQuantizer(nn.Module):
             )                                                        # (n_clusters, D)
             labels = torch.tensor(km.labels_, dtype=torch.long, device=r.device)  # (B,)
 
-            # If the batch had fewer rows than codes, pad the remaining
-            # slots with random rows from r (with replacement).
+            # Fewer rows than codes: pad remaining slots with random rows of r.
             if n_clusters < self.K:
                 extra = self.K - n_clusters
                 pad_idx = torch.randint(0, B, (extra,), device=r.device)
@@ -181,11 +131,6 @@ class ResidualQuantizer(nn.Module):
 
             self.codebooks.data[l] = centroids
 
-            # Seed EMA buffers so cluster_sum / cluster_size = centroids
-            # after the first update step. For "real" centroids we set
-            # the buffers to the k-means cluster statistics; for padded
-            # slots we set (size=1, sum=vec) so the ratio recovers the
-            # padded vector.
             if self.use_ema:
                 counts = torch.bincount(labels, minlength=self.K).type(r.dtype)   # (K,)
                 sums = torch.zeros(self.K, self.D, dtype=r.dtype, device=r.device)
@@ -196,8 +141,6 @@ class ResidualQuantizer(nn.Module):
                 self.cluster_size[l] = counts
                 self.cluster_sum[l] = sums
 
-            # Quantize r with the freshly-set codebook to produce the
-            # residual for the next level.
             e, _ = self._nearest_code(r, l)
             r = r - e
 
@@ -207,14 +150,9 @@ class ResidualQuantizer(nn.Module):
         residuals: list[torch.Tensor],
         usage_threshold: float = 1.0,
     ) -> list[int]:
-        """Resurrect codes whose EMA usage count fell below `usage_threshold`.
-
-        For each level, replace each dead code with a random latent drawn
-        from THAT LEVEL'S residuals in the current batch — dead codes at
-        level l get reinitialized to something plausibly-level-l, not raw z.
-
-        Returns the per-level count of codes reinitialized.
-        """
+        """Resurrect codes whose EMA usage fell below `usage_threshold`, drawing
+        replacements from that level's residuals in the current batch. Returns
+        the per-level count reinitialized."""
         assert self.use_ema, "reinit relies on EMA cluster_size statistics"
         assert len(residuals) == self.L
 
@@ -228,19 +166,12 @@ class ResidualQuantizer(nn.Module):
 
             r_l = residuals[l]                                  # (B, D)
             B = r_l.shape[0]
-            # Sample with replacement — n_dead can exceed B on tiny batches.
             pick = torch.randint(0, B, (n_dead,), device=r_l.device)
             new_codes = r_l[pick]                               # (n_dead, D)
 
-            # Overwrite the dead codes...
             self.codebooks.data[l][dead] = new_codes
-
-            # ...and reset their EMA buffers, otherwise the next EMA step
-            # will immediately overwrite the new vectors with cluster_sum
-            # (still ~0) divided by cluster_size (still ~0). Setting
-            # cluster_sum = new_codes and cluster_size = 1 makes the ratio
-            # equal to the new vector — so the next update blends from
-            # the right starting point.
+            # Reset EMA buffers to (sum=new, size=1) so the next update blends
+            # from the new vector rather than overwriting it with ~0/~0.
             self.cluster_sum[l][dead] = new_codes
             self.cluster_size[l][dead] = 1.0
 

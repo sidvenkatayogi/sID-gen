@@ -1,8 +1,7 @@
 """MovieLens 1M loader + content embedding builder.
 
-Pipeline:
-  ml-1m.zip -> movies.dat -> text per movie -> sentence-transformer ->
-  standardize -> cache (embeddings.npy + movies.csv + stats.npz)
+    ml-1m.zip -> movies.dat -> text per movie -> sentence-transformer ->
+    standardize -> cache (embeddings.npy + movies.csv + stats.npz)
 """
 
 from __future__ import annotations
@@ -39,9 +38,8 @@ def download_ml1m(dest_dir: Path) -> Path:
 
 
 def load_movies(movies_path: Path, encoding: str = "latin-1") -> pd.DataFrame:
-    """Parse movies.dat. Columns: movieId, title, genres."""
-    # `::` separator forces python engine; latin-1 because the file has
-    # accented characters that crash a utf-8 read.
+    """Parse movies.dat (columns movieId, title, genres). The `::` separator
+    forces the python engine; latin-1 handles the accented characters."""
     df = pd.read_csv(
         movies_path,
         sep="::",
@@ -54,7 +52,7 @@ def load_movies(movies_path: Path, encoding: str = "latin-1") -> pd.DataFrame:
 
 
 def build_texts(df: pd.DataFrame) -> list[str]:
-    """One text string per movie: 'Title. Genres: g1, g2, g3.'"""
+    """One text per movie: 'Title. Genres: g1, g2, g3.'"""
     texts = []
     for title, genres in zip(df["title"], df["genres"]):
         genres_csv = ", ".join(genres.split("|"))
@@ -63,9 +61,6 @@ def build_texts(df: pd.DataFrame) -> list[str]:
 
 
 def embed_texts(texts: list[str], model_name: str) -> np.ndarray:
-    """Encode texts with a sentence-transformer. Returns (N, D) float32."""
-    # Imported lazily so a user without sentence-transformers installed can
-    # still import this module for the parsing helpers.
     from sentence_transformers import SentenceTransformer
 
     print(f"[data] loading embedding model: {model_name}")
@@ -82,10 +77,9 @@ def embed_texts(texts: list[str], model_name: str) -> np.ndarray:
 
 
 def standardize(x: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Per-dimension z-score. Returns (x_std, mean, std)."""
+    """Per-dimension z-score, guarding zero-variance dims. Returns (x_std, mean, std)."""
     mean = x.mean(axis=0)
     std = x.std(axis=0)
-    # Guard against zero-variance dims so we don't divide by 0.
     std_safe = np.where(std < 1e-8, 1.0, std)
     x_std = (x - mean) / std_safe
     return x_std.astype(np.float32), mean.astype(np.float32), std.astype(np.float32)

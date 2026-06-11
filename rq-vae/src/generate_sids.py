@@ -1,8 +1,7 @@
 """Load a trained RQ-VAE and emit per-item Semantic IDs.
 
-Deterministic: encoder -> residual quantizer -> integer tuple. No decoder,
-no sampling. The same checkpoint + embeddings + config always produces the
-same SIDs.
+Deterministic: encoder -> residual quantizer -> integer tuple. No decoder, no
+sampling — the same checkpoint + embeddings always produce the same SIDs.
 """
 
 from __future__ import annotations
@@ -21,8 +20,7 @@ from .model import RQVAE
 
 
 def build_model_from_checkpoint(ckpt_path: Path, device: torch.device) -> tuple[RQVAE, dict]:
-    """Rebuild RQ-VAE from a saved checkpoint. The checkpoint stores both
-    state_dict and the config it was trained with."""
+    """Rebuild the RQ-VAE from a checkpoint (which stores its own config)."""
     ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
     cfg = ckpt["config"]
     m = cfg["model"]
@@ -57,7 +55,9 @@ def format_sid(row: list[int]) -> str:
     return "-".join(str(c) for c in row)
 
 
-def generate(cfg: dict, checkpoint: str) -> None:
+def generate(cfg: dict, checkpoint: str | None = None) -> None:
+    if checkpoint is None:
+        checkpoint = str(Path(cfg["output"]["checkpoints_dir"]) / "best.pt")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"[gen] device={device}")
 
@@ -75,7 +75,6 @@ def generate(cfg: dict, checkpoint: str) -> None:
     indices = encode_all(model, x)                              # (N, L) on cpu
     K = model.quantizer.K
 
-    # ---- Health metrics on the final SIDs ---------------------------------
     util = codebook_utilization(indices, K)
     ppl = codebook_perplexity(indices, K)
     uniq_frac, dupes = sid_uniqueness(indices)
@@ -83,7 +82,6 @@ def generate(cfg: dict, checkpoint: str) -> None:
     print(f"[gen] perplexity per level:  {[f'{p:.2f}' for p in ppl]}")
     print(f"[gen] sid unique fraction:   {uniq_frac:.4f}  collisions={dupes}")
 
-    # ---- Write sids.csv ---------------------------------------------------
     sid_strings = [format_sid(row) for row in indices.tolist()]
     out_df = df.copy()
     out_df["sid"] = sid_strings
@@ -92,13 +90,11 @@ def generate(cfg: dict, checkpoint: str) -> None:
     out_df.to_csv(out_path, index=False)
     print(f"[gen] wrote {out_path}  ({len(out_df)} rows)")
 
-    # ---- Sample print -----------------------------------------------------
     print("\n[sample] 10 items and their SIDs:")
     for i in range(min(10, len(out_df))):
         row = out_df.iloc[i]
         print(f"  {row['sid']:>12}  {row.to_dict()}")
 
-    # ---- Update metrics.json with final inference-time numbers ------------
     metrics_path = Path(cfg["output"]["metrics_json"])
     metrics: dict = {}
     if metrics_path.exists():
@@ -120,7 +116,7 @@ def generate(cfg: dict, checkpoint: str) -> None:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", required=True)
-    ap.add_argument("--checkpoint", default="outputs/checkpoints/best.pt")
+    ap.add_argument("--checkpoint", default=None, help="defaults to {name}_checkpoints/best.pt")
     args = ap.parse_args()
     generate(load_config(args.config), args.checkpoint)
 

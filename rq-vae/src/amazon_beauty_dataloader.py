@@ -1,12 +1,10 @@
-"""Amazon Product Reviews — Beauty category loader + content embedding builder.
+"""Amazon Beauty loader + content embedding builder.
 
-Pipeline:
-  meta_Beauty.json.gz -> per-item text -> sentence-t5 ->
-  standardize -> cache (embeddings.npy + items.csv + stats.npz)
+    meta_Beauty.json.gz -> per-item text -> sentence-t5 -> standardize ->
+    cache (embeddings.npy + items.csv + stats.npz)
 
-The metadata file is the McAuley UCSD Amazon Reviews dump
-(https://jmcauley.ucsd.edu/data/amazon/), one JSON object per line, gzipped.
-Each line has fields like asin, title, brand, categories, price, description.
+The metadata is the McAuley UCSD Amazon Reviews dump (one gzipped JSON object
+per line) with fields like asin, title, brand, categories, price, description.
 """
 
 from __future__ import annotations
@@ -39,8 +37,7 @@ def download_meta(dest_path: Path) -> Path:
 
 
 def _flatten_categories(cats) -> str:
-    """`categories` is a list of category paths (lists of strings). Flatten
-    to a deduped comma-separated string preserving order."""
+    """Flatten `categories` (list of category paths) to a deduped, ordered CSV."""
     if not isinstance(cats, list):
         return ""
     seen: dict[str, None] = {}
@@ -53,9 +50,8 @@ def _flatten_categories(cats) -> str:
 
 
 def load_meta(meta_path: Path) -> pd.DataFrame:
-    """Parse meta_Beauty.json.gz. The file is Python-dict-literal-ish (single
-    quotes), so `eval` is the canonical loader for these dumps. We keep it
-    behind a `json.loads` fast-path in case the file is actual JSON."""
+    """Parse meta_Beauty.json.gz. The lines are Python-repr-ish, so fall back to
+    eval when JSON parsing fails."""
     rows: list[dict] = []
     with gzip.open(meta_path, "rt", encoding="utf-8", errors="replace") as f:
         for line in f:
@@ -65,7 +61,6 @@ def load_meta(meta_path: Path) -> pd.DataFrame:
             try:
                 obj = json.loads(line)
             except json.JSONDecodeError:
-                # McAuley dumps use Python repr — single quotes, etc.
                 obj = eval(line, {"__builtins__": {}}, {})
             rows.append(obj)
     df = pd.DataFrame(rows)
@@ -84,8 +79,7 @@ def load_meta(meta_path: Path) -> pd.DataFrame:
 
 
 def build_texts(df: pd.DataFrame) -> list[str]:
-    """One text string per item, concatenating the metadata fields the TIGER
-    paper uses: title, brand, categories, price, description."""
+    """One text per item: title, brand, categories, price, description."""
     texts: list[str] = []
     for _, r in df.iterrows():
         parts: list[str] = []
@@ -121,6 +115,7 @@ def embed_texts(texts: list[str], model_name: str) -> np.ndarray:
 
 
 def standardize(x: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Per-dimension z-score, guarding zero-variance dims. Returns (x_std, mean, std)."""
     mean = x.mean(axis=0)
     std = x.std(axis=0)
     std_safe = np.where(std < 1e-8, 1.0, std)

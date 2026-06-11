@@ -1,17 +1,13 @@
 """Torch Dataset producing encoder/decoder tensors for the TIGER transformer.
 
-Each row of `{train,val,test}.jsonl` becomes one training example:
+Each row of `{train,val,test}.jsonl` becomes one example:
 
-    encoder input:   [user_token(u),  sid(i_1)[0..3],  ...,  sid(i_h)[0..3]]
-                     (1 + 4*h tokens, right-padded with PAD to max_enc_len=82)
+    encoder input:   [user_token(u), sid(i_1)[0..3], ..., sid(i_h)[0..3]]  (right-padded)
     encoder mask:    1 on real positions, 0 on PAD
     decoder input:   [BOS, c0, c1, c2, c3]
     decoder labels:  [c0, c1, c2, c3, EOS]
 
-History is truncated to the **most recent 20 items** (SPEC §3.4). Decoder
-input/labels are always length 5 (one target SID) so no decoder padding is
-needed. The loss is computed over every decoder position — there are no
-PAD positions to mask there.
+History is truncated to the most recent 20 items.
 """
 
 from __future__ import annotations
@@ -33,12 +29,9 @@ from retrieval.vocab import (
     user_token,
 )
 
-# ---- Constants from the spec -----------------------------------------------
-HISTORY_CAP: int = 20                    # SPEC §3.4
-# Encoder: 1 user token + 4 codewords per history item -> max real length 1+4*20=81.
-# Spec rounds that up to 82 for nicer divisibility (see §5.1); we follow it.
-MAX_ENC_LEN: int = 82
-MAX_DEC_LEN: int = 5                     # BOS + 4 codewords  /  4 codewords + EOS
+HISTORY_CAP: int = 20
+MAX_ENC_LEN: int = 82        # 1 user token + 4*20 codeword tokens, rounded up
+MAX_DEC_LEN: int = 5         # BOS + 4 codewords / 4 codewords + EOS
 
 
 def _load_jsonl(path: Path) -> list[dict]:
@@ -65,12 +58,9 @@ def _load_item_to_sid(path: Path) -> dict[str, tuple[int, int, int, int]]:
 class TigerSequenceDataset(Dataset):
     """One example per row in a jsonl split.
 
-    Returns a dict of tensors:
-        encoder_input_ids  (MAX_ENC_LEN,)
-        encoder_attn_mask  (MAX_ENC_LEN,)
-        decoder_input_ids  (MAX_DEC_LEN,)
-        decoder_labels     (MAX_DEC_LEN,)
-        target_sid         (4,)    — raw SID of the gold item, handy for eval
+    Each item is a dict of tensors: `encoder_input_ids`, `encoder_attn_mask`,
+    `decoder_input_ids`, `decoder_labels`, and `target_sid` (the gold item's
+    raw 4-code SID, used by eval).
     """
 
     def __init__(
@@ -90,8 +80,6 @@ class TigerSequenceDataset(Dataset):
 
         all_rows = _load_jsonl(Path(jsonl_path))
 
-        # Drop rows whose target item has no SID (shouldn't happen if
-        # build_sid_tables.py was run on the same sequences, but be safe).
         kept: list[dict] = []
         dropped = 0
         for r in all_rows:
@@ -110,10 +98,8 @@ class TigerSequenceDataset(Dataset):
         return len(self.rows)
 
     def _history_sids(self, history: Sequence[str]) -> list[tuple[int, int, int, int]]:
-        """Truncate to the cap (keeping the MOST RECENT items) and look up SIDs.
-        Items missing from the SID map are silently dropped — they were never
-        seen during RQ-VAE encoding so we can't represent them. In a well-formed
-        pipeline this is empty."""
+        """Keep the most recent `history_cap` items and look up their SIDs.
+        Items absent from the SID map are dropped (empty in a well-formed run)."""
         recent = history[-self.history_cap :]
         sids: list[tuple[int, int, int, int]] = []
         for iid in recent:
@@ -144,8 +130,6 @@ class TigerSequenceDataset(Dataset):
 
 
 def collate(batch: list[dict[str, torch.Tensor]]) -> dict[str, torch.Tensor]:
-    """All tensors per-example are already the same shape (we pad inside
-    __getitem__), so collation is a straight stack."""
     return {k: torch.stack([b[k] for b in batch], dim=0) for k in batch[0]}
 
 

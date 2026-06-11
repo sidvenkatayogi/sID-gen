@@ -1,46 +1,41 @@
-## experiments and implementations for TIGER (Transformer Index for GEnerative Recommenders) in pytorch
+# TIGER — Recommender Systems with Generative Retrieval
 
-This repo has two sibling packages that compose into the full TIGER pipeline:
+An external PyTorch reproduction of **TIGER**, from the NeurIPS '23 paper
+*"Recommender Systems with Generative Retrieval"* (Rajput et al.), trained and
+evaluated on Amazon Beauty.
 
-```
-tiger/                      # project root
-├── rq-vae/                 # upstream: content embedding -> Semantic IDs
-└── tiger/                  # this package: TIGER encoder-decoder transformer
-```
+**Paper:** http://arxiv.org/abs/2305.05065
 
-The RQ-VAE produces 3-code Semantic IDs from item content embeddings. The
-TIGER transformer treats those IDs (plus a collision-breaking 4th code and
-a user-ID hash) as a flat token vocabulary, and learns to autoregressively
-decode the SID of the next item in a user's history.
+The pipeline has two stages, each its own package:
 
-## Components
+- **`rq-vae/`** — a residual-quantized VAE that turns item content embeddings
+  into Semantic IDs.
+- **`retrieval/`** — a T5 encoder-decoder that decodes the next item's Semantic
+  ID from a user's history.
 
-| Path | Purpose |
-|---|---|
-| `tiger/vocab.py` | Token layout, SID round-trip, MD5 user-ID hashing |
-| `tiger/dataset.py` | Torch Dataset producing encoder/decoder tensors |
-| `tiger/model.py` | T5-style encoder-decoder, from-scratch PyTorch |
-| `tiger/decode.py` | Beam search with per-position vocabulary masking |
-| `tiger/eval.py` | Recall@K and NDCG@K metrics |
-| `tiger/train.py` | Training loop (AdamW + linear-warmup-then-inv-sqrt) |
-| `scripts/preprocess_beauty.py` | 5-core reviews → train/val/test.jsonl (leave-one-out) |
-| `scripts/build_sid_tables.py` | RQ-VAE checkpoint → `item_to_sid.json` + `sid_to_item.json` |
-| `retrieval/configs/beauty.yaml` | All hyperparameters (model + train) |
-| `tests/` | Vocab round-trip, dataset shapes, beam decode validity |
-
-## End-to-end run (Amazon Beauty)
-
-Assumes `rq-vae` has already been trained end-to-end (its
-`outputs/amazon_beauty_checkpoints/best.pt` exists, plus `*_items.csv` and
-`*_embeddings.npy`).
+## Requirements
 
 ```bash
-# 1. Preprocess Beauty reviews into per-user sequences with leave-one-out split.
+pip install -r requirements.txt
+```
+
+## Usage
+
+All commands run from the project root.
+
+```bash
+# 1. Train the RQ-VAE and emit item content embeddings + Semantic IDs.
+cd rq-vae
+python -m src.amazon_beauty_dataloader --config configs/amazon_beauty_config.yaml --download
+python -m src.train         --config configs/amazon_beauty_config.yaml
+python -m src.generate_sids --config configs/amazon_beauty_config.yaml \
+    --checkpoint outputs/amazon_beauty_checkpoints/best.pt
+cd ..
+
+# 2. Preprocess Beauty reviews into per-user sequences (leave-one-out split).
 python scripts/preprocess_beauty.py --download
 
-# 2. Run the trained RQ-VAE over the items in those sequences and emit the
-#    SID lookup tables. The collision-breaking c3 suffix is computed only
-#    over items that show up in the sequences.
+# 3. Build the SID lookup tables (the collision-breaking c3 is computed here).
 python scripts/build_sid_tables.py \
     --checkpoint rq-vae/outputs/amazon_beauty_checkpoints/best.pt \
     --items-csv  rq-vae/outputs/amazon_beauty_items.csv \
@@ -48,43 +43,47 @@ python scripts/build_sid_tables.py \
     --sequences-dir data/processed \
     --output-dir   data
 
-# 3. Train the TIGER transformer.
+# 4. Train the retrieval transformer.
 python -m retrieval.train --config retrieval/configs/beauty.yaml
 
-# 4. (Optional) Run the unit tests.
-python -m pytest tests/
+# 5. Evaluate the best checkpoint on the test split.
+python -m retrieval.evaluate --checkpoint outputs/tiger_beauty/checkpoints/best.pt
 ```
 
-Outputs land in `outputs/tiger_beauty/`:
-- `checkpoints/best.pt` — best by val NDCG@10
-- `checkpoints/last.pt` — most recent
-- `metrics.json` — full eval history + best score
-- `val_curve.png` — NDCG@10 / Recall@10 vs step
+Retrieval outputs land in `outputs/tiger_beauty/` (`checkpoints/best.pt`,
+`metrics.json`, `val_curve.png`).
 
-## Target metrics (SPEC §9, paper, Beauty test split)
+## Results
 
-| Metric | Paper | Hit if within ±5% |
-|---|---|---|
-| Recall@5 | 0.0454 | 0.0431 – 0.0477 |
-| NDCG@5 | 0.0321 | 0.0305 – 0.0337 |
-| Recall@10 | 0.0648 | 0.0616 – 0.0680 |
-| NDCG@10 | 0.0384 | 0.0365 – 0.0403 |
+Because there is no official TIGER reference implementation, we compare on
+Beauty against the numbers reported in the original paper. Metrics are Recall
+and NDCG at @5 and @10 on the test split, from the best checkpoint by
+validation NDCG@10.
 
-## Implementation notes
+| Metric | This repo | Paper | Relative |
+|---|---|---|---|
+| Recall@5 | 0.0258 | 0.0454 | −43% |
+| NDCG@5 | 0.0176 | 0.0321 | −45% |
+| Recall@10 | 0.0390 | 0.0648 | −40% |
+| NDCG@10 | 0.0218 | 0.0384 | −43% |
 
-- **From-scratch T5**: encoder-decoder with RMSNorm, T5-style relative
-  position bias (bucketed, log-spaced beyond a threshold). See `tiger/model.py`.
-- **Param count**: ~4.85M with the spec config — the spec's "~13M" claim is
-  optimistic for these particular hyperparameters (`d_model=128`, `d_ff=1024`,
-  4+4 layers); the architecture itself matches.
-- **Vocab size 3027**: 256×4 codeword tokens + 2000 user-ID buckets + 3
-  specials (PAD/BOS/EOS).
-- **User-ID hashing**: MD5 → mod 2000. NOT Python's `hash()` (salted per
-  process — would break checkpoint reuse).
-- **Beam search**: width 50, per-position vocab mask guarantees structural
-  validity of each decoded token. Invalid (c0,c1,c2,c3) tuples that don't
-  map to a real item are discarded; we return top-K of what's left.
+Invalid-ID rate @10 ≈ 0.0002.
+Changes in model size, hyperparameters, or optimizer didn't seem to help :/
+
+## Implementation differences
+
+- **Parameter count**: ~4.85M vs. the paper's stated ~13M (T5 encoder-decoder,
+  4 + 4 layers, `d_model=128`).
+- **Backbone**: T5 via HuggingFace `transformers`, with a from-scratch beam
+  search (width 50, per-position vocabulary masking; structurally-invalid IDs
+  are filtered out).
+- **Optimizer**: Adafactor (T5X-style), peak LR 0.01, linear warmup then
+  inverse-sqrt decay, with early stopping on validation NDCG@10.
+- **Content embeddings**: `sentence-t5-base` rather than the paper's larger encoder.
+- **Vocabulary**: 3027 tokens (256×4 codewords + 2000 hashed user-ID buckets +
+  PAD/BOS/EOS); user IDs hashed with MD5.
 
 ## References
-* [Recommender Systems with Generative Retrieval](https://arxiv.org/pdf/2305.05065) by Shashank Rajput, Nikhil Mehta, Anima Singh, Raghunandan H. Keshavan, Trung Vu, Lukasz Heldt, Lichan Hong, Yi Tay, Vinh Q. Tran, Jonah Samost, Maciej Kula, Ed H. Chi, Maheswaran Sathiamoorthy
-* [Autoregressive Image Generation using Residual Quantization](https://arxiv.org/abs/2203.01941) by Doyup Lee, Chiheon Kim, Saehoon Kim, Minsu Cho, Wook-Shin Han
+
+- [Recommender Systems with Generative Retrieval](https://arxiv.org/abs/2305.05065) — Rajput et al., NeurIPS 2023.
+- [Autoregressive Image Generation using Residual Quantization](https://arxiv.org/abs/2203.01941) — Lee et al. (RQ-VAE).

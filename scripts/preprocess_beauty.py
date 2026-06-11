@@ -1,30 +1,15 @@
 """Build train/val/test sequences from the Amazon Beauty 5-core reviews.
 
-Pipeline:
-    reviews_Beauty_5.json.gz   (one JSON-ish object per line)
-        |
-        v  parse {reviewerID, asin, unixReviewTime}
-        |
-        v  sort by user, then by timestamp within user
-        |
-        v  5-core filter (iterative until stable — usually a no-op on the
-                          McAuley 5-core dump, but kept for safety)
-        |
-        v  leave-one-out split (SPEC §3.3):
-              train:  (history=[i_1..i_{k-1}], target=i_k)  for k in [2, n-2]
-              val:    (history=[i_1..i_{n-2}], target=i_{n-1})
-              test:   (history=[i_1..i_{n-1}], target=i_n)
-        |
-        v  write {train,val,test}.jsonl
+Parses the reviews dump, applies an iterative 5-core filter, sorts each user's
+items by timestamp, and writes a leave-one-out split as jsonl rows of the form
+`{"user_id": ..., "history": [...], "target": ...}`:
 
-JSONL row:
-    {"user_id": "...", "history": ["item1", "item2", ...], "target": "item_k"}
+    train:  (history=[i_1..i_{k-1}], target=i_k)  for k in [2, n-2]
+    val:    (history=[i_1..i_{n-2}], target=i_{n-1})
+    test:   (history=[i_1..i_{n-1}], target=i_n)
 
-History truncation to 20 happens at the Dataset layer, not here — keeping
-the full prefix on disk lets us experiment with the cap without re-preprocessing.
-
-Target stats after preprocessing (SPEC §3.2):
-    Users 22,363   Items 12,101   Mean seq len 8.87   Median 6
+History truncation to 20 happens in the Dataset, not here. Expected stats after
+preprocessing: users 22,363 / items 12,101 / mean seq len 8.87 / median 6.
 """
 
 from __future__ import annotations
@@ -41,9 +26,6 @@ REVIEWS_URL = (
 )
 
 
-# ----------------------------------------------------------------------------
-# Download
-# ----------------------------------------------------------------------------
 def download(dest_path: Path) -> None:
     if dest_path.exists():
         print(f"[prep] already downloaded at {dest_path}")
@@ -56,12 +38,9 @@ def download(dest_path: Path) -> None:
     print(f"[prep] wrote {dest_path} ({len(buf)/1e6:.1f} MB)")
 
 
-# ----------------------------------------------------------------------------
-# Parse — same pattern as rq-vae/src/amazon_beauty_dataloader.py: try JSON,
-# fall back to Python literal-eval for the McAuley repr-style lines.
-# ----------------------------------------------------------------------------
 def parse_reviews(path: Path) -> list[tuple[str, str, int]]:
-    """Return list of (user_id, item_id, timestamp). Missing fields drop the row."""
+    """Return list of (user_id, item_id, timestamp). Missing fields drop the row.
+    McAuley dumps are Python-repr-ish, so fall back to eval when JSON fails."""
     rows: list[tuple[str, str, int]] = []
     with gzip.open(path, "rt", encoding="utf-8", errors="replace") as f:
         for line in f:
@@ -82,15 +61,12 @@ def parse_reviews(path: Path) -> list[tuple[str, str, int]]:
     return rows
 
 
-# ----------------------------------------------------------------------------
-# 5-core filter (iterative).
-# ----------------------------------------------------------------------------
 def five_core_filter(
     rows: list[tuple[str, str, int]],
     min_count: int = 5,
 ) -> list[tuple[str, str, int]]:
     """Iteratively drop users/items with fewer than `min_count` interactions
-    until both sides satisfy the threshold. Converges in a handful of passes."""
+    until both sides satisfy the threshold."""
     cur = rows
     for it in range(20):
         user_counts = Counter(u for u, _, _ in cur)
@@ -107,21 +83,15 @@ def five_core_filter(
     raise RuntimeError("5-core filter did not converge in 20 passes")
 
 
-# ----------------------------------------------------------------------------
-# Sequence building.
-# ----------------------------------------------------------------------------
 def build_user_sequences(
     rows: list[tuple[str, str, int]],
 ) -> dict[str, list[str]]:
-    """For each user, return the chronologically sorted list of items they
-    interacted with. Ties on timestamp are broken by stable insertion order
-    (already produced by the file's enumeration)."""
+    """Per user, the chronologically sorted item list (stable on timestamp ties)."""
     grouped: dict[str, list[tuple[int, str]]] = defaultdict(list)
     for u, i, t in rows:
         grouped[u].append((t, i))
     seqs: dict[str, list[str]] = {}
     for u, lst in grouped.items():
-        # `sort` is stable — equal timestamps keep file order.
         lst.sort(key=lambda x: x[0])
         seqs[u] = [i for _, i in lst]
     return seqs
@@ -130,11 +100,8 @@ def build_user_sequences(
 def split_leave_one_out(
     seqs: dict[str, list[str]],
 ) -> tuple[list[dict], list[dict], list[dict]]:
-    """Generate train / val / test rows from per-user sequences.
-
-    Train uses the sliding-window scheme from SPEC §7.1: for a sequence of
-    length n, every prefix of length 1..n-3 is a separate training example.
-    """
+    """Generate train / val / test rows from per-user sequences. Train uses the
+    sliding-window scheme: every prefix of length 1..n-3 is one example."""
     train: list[dict] = []
     val: list[dict] = []
     test: list[dict] = []
@@ -142,45 +109,19 @@ def split_leave_one_out(
     for u, seq in seqs.items():
         n = len(seq)
         if n < 3:
-            # Not enough for both a val and a test point; skip.
-            # (5-core filtering should make this impossible, but be safe.)
             continue
 
-        # ---- train: predict i_k from [i_1, ..., i_{k-1}] for k in [2, n-2] ----
-        # i.e. for the second through (n-2)th items, given the items before them.
         for k in range(2, n - 1):
             train.append(
-                {
-                    "user_id": u,
-                    "history": seq[: k - 1],   # i_1..i_{k-1}
-                    "target": seq[k - 1],      # i_k  (zero-indexed: seq[k-1])
-                }
+                {"user_id": u, "history": seq[: k - 1], "target": seq[k - 1]}
             )
 
-        # ---- val: predict i_{n-1} from [i_1, ..., i_{n-2}] -------------------
-        val.append(
-            {
-                "user_id": u,
-                "history": seq[: n - 2],
-                "target": seq[n - 2],
-            }
-        )
-
-        # ---- test: predict i_n from [i_1, ..., i_{n-1}] ----------------------
-        test.append(
-            {
-                "user_id": u,
-                "history": seq[: n - 1],
-                "target": seq[n - 1],
-            }
-        )
+        val.append({"user_id": u, "history": seq[: n - 2], "target": seq[n - 2]})
+        test.append({"user_id": u, "history": seq[: n - 1], "target": seq[n - 1]})
 
     return train, val, test
 
 
-# ----------------------------------------------------------------------------
-# I/O
-# ----------------------------------------------------------------------------
 def write_jsonl(rows: list[dict], path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w") as f:
@@ -204,9 +145,6 @@ def report_stats(seqs: dict[str, list[str]]) -> None:
     )
 
 
-# ----------------------------------------------------------------------------
-# Main
-# ----------------------------------------------------------------------------
 def preprocess(reviews_path: Path, output_dir: Path, download_flag: bool) -> None:
     if download_flag or not reviews_path.exists():
         download(reviews_path)
@@ -234,11 +172,7 @@ def main() -> None:
         default=Path("data/raw/reviews_Beauty_5.json.gz"),
         help="path to the 5-core reviews dump",
     )
-    ap.add_argument(
-        "--output-dir",
-        type=Path,
-        default=Path("data/processed"),
-    )
+    ap.add_argument("--output-dir", type=Path, default=Path("data/processed"))
     ap.add_argument(
         "--download",
         action="store_true",

@@ -1,18 +1,9 @@
 """Retrieval metrics: Recall@K and NDCG@K.
 
-For each test user, we have:
-    - a single ground-truth next item (`gold`)
-    - a ranked list of K predicted items (best first; `None` for slots we
-      couldn't fill, e.g. when beam search produced too many invalid SIDs)
-
-Recall@K:
-    1 if `gold` appears anywhere in the top-K predictions, else 0.
-    Averaged across users.
-
-NDCG@K (single-relevant-item form, SPEC §9):
-    `1 / log2(rank + 1)` if `gold` hits at rank ∈ [1, K], else 0.
-    Averaged across users. With one relevant item the IDCG is `1/log2(2) = 1`,
-    so this matches the standard formulation without an extra normalization.
+Each user has one ground-truth next item and a ranked list of K predictions
+(`None` for slots beam search couldn't fill). With a single relevant item the
+IDCG is 1, so NDCG@K = `1 / log2(rank + 1)` if the gold item hits at rank <= K,
+else 0 — averaged over users. Recall@K is the hit fraction.
 """
 
 from __future__ import annotations
@@ -34,11 +25,6 @@ def compute_retrieval_metrics(
     all_gold: list[str],
     ks: tuple[int, ...] = (5, 10),
 ) -> dict[str, float]:
-    """Compute Recall@k and NDCG@k for every k in `ks`.
-
-    Each row of `all_predictions` should be at least max(ks) long. Slots
-    that beam search couldn't fill can be `None` — they simply never match.
-    """
     assert len(all_predictions) == len(all_gold)
     n = len(all_gold)
 
@@ -55,3 +41,23 @@ def compute_retrieval_metrics(
         out[f"ndcg@{k}"] = ndcg_sum / max(n, 1)
 
     return out
+
+
+# Paper's reported Beauty test numbers (Rajput et al., NeurIPS 2023).
+PAPER_METRICS = {"recall@5": 0.0454, "ndcg@5": 0.0321, "recall@10": 0.0648, "ndcg@10": 0.0384}
+
+
+def compare_to_paper(metrics: dict[str, float], paper: dict[str, float] = PAPER_METRICS):
+    """Tidy ours-vs-paper comparison table (returns a pandas DataFrame)."""
+    import pandas as pd
+
+    rows = [
+        {
+            "metric": k,
+            "ours": round(metrics[k], 4),
+            "paper": ref,
+            "rel_%": round((metrics[k] - ref) / ref * 100, 1),
+        }
+        for k, ref in paper.items()
+    ]
+    return pd.DataFrame(rows)

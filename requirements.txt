@@ -4,7 +4,5 @@ sentence-transformers
 numpy
 pandas
 pyyaml
-tqdm
 scikit-learn
 matplotlib
-pytest

@@ -1,5 +1,4 @@
-# TIGER transformer hyperparameters for Amazon Beauty (SPEC §6, §7).
-# All output paths default to ./outputs/tiger_beauty/ under the project root.
+# TIGER transformer hyperparameters for Amazon Beauty.
 
 model:
   vocab_size: 3027            # 256*4 codeword tokens + 2000 user tokens + 3 specials
@@ -13,7 +12,7 @@ model:
   max_enc_len: 82             # 1 user token + 4*20 codeword tokens (rounded up)
   max_dec_len: 5              # BOS + 4 codewords / 4 codewords + EOS
   rel_num_buckets: 32         # T5 relative position bias buckets
-  rel_max_distance: 128       # log-bucketed beyond this distance
+  rel_max_distance: 128
   tie_embeddings: true
   initializer_range: 0.02
 
@@ -21,9 +20,9 @@ train:
   total_steps: 200000
   batch_size: 256
   warmup_steps: 10000
-  peak_lr: 0.01
-  beta1: 0.9
-  beta2: 0.999
+  peak_lr: 0.01               # Adafactor LR (see retrieval/train.py)
+  beta1: 0.9                  # unused (Adafactor)
+  beta2: 0.999                # unused (Adafactor)
   weight_decay: 0.0
   grad_clip: 1.0
   label_smoothing: 0.0
@@ -32,13 +31,11 @@ train:
   eval_every: 5000
   early_stop_patience: 5      # stop after N evals w/o val NDCG@10 improvement (null = never)
   eval_batch_size: 64
-  eval_beam_width: 50         # SPEC §8.1
-  eval_top_k: 10              # SPEC §8.3 (top-K we actually return)
+  eval_beam_width: 50
+  eval_top_k: 10
   eval_max_batches: null      # null = full val set every eval
   num_workers: 2
 
 paths:
-  # Inputs (relative to project root)
   data_dir: data
-  # Outputs
   output_dir: outputs/tiger_beauty

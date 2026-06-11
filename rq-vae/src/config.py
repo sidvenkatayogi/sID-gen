@@ -1,17 +1,16 @@
 """Config loading + path resolution.
 
-The config has a top-level `name` (e.g. `ml1m`). All output paths in the
-pipeline are derived from it under `outputs/`, so two configs with different
-names produce disjoint artifacts and can run side-by-side.
+The top-level `name` field drives every output path under `outputs/`, so configs
+with different names produce disjoint artifacts. `load_config` injects the
+resolved paths:
 
-Resolved paths injected into the config:
-  data.embeddings_path  = outputs/{name}_embeddings.npy
-  data.items_csv        = outputs/{name}_items.csv
-  data.stats_path       = outputs/{name}_stats.npz
-  output.sids_csv       = outputs/{name}_sids.csv
-  output.checkpoints_dir= outputs/{name}_checkpoints
-  output.metrics_json   = outputs/{name}_metrics.json
-  output.history_json   = outputs/{name}_history.json
+  data.embeddings_path   = outputs/{name}_embeddings.npy
+  data.items_csv         = outputs/{name}_items.csv
+  data.stats_path        = outputs/{name}_stats.npz
+  output.sids_csv        = outputs/{name}_sids.csv
+  output.checkpoints_dir = outputs/{name}_checkpoints
+  output.metrics_json    = outputs/{name}_metrics.json
+  output.history_json    = outputs/{name}_history.json
 """
 
 from __future__ import annotations

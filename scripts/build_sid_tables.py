@@ -1,25 +1,10 @@
 """Build `item_to_sid.json` + `sid_to_item.json` from the trained RQ-VAE.
 
-Pipeline:
-    rq-vae best.pt           -- loaded
-    amazon_beauty_items.csv  -- item IDs in row order
-    amazon_beauty_embeddings.npy -- (N, D) standardized content embeddings
-        |
-        v   restrict to items appearing in the 5-core sequences
-            (if --sequences-dir is given)
-        |
-        v   encode through the RQ-VAE -> (c0, c1, c2) per item
-        |
-        v   compute c3 = collision-breaking suffix
-            (items sharing (c0,c1,c2) get c3 = 0, 1, 2, ... in sorted item_id order;
-            isolated items get c3 = 0)
-        |
-        v   write the two JSONs
-
-The collision-breaking c3 is computed **over the filtered subset only** —
-running it over all 259K Beauty items would waste codes on items the TIGER
-model will never see (it only encodes items that appear in the 5-core
-sequences).
+Encodes the items appearing in the 5-core sequences through the frozen RQ-VAE
+to get `(c0, c1, c2)`, assigns a collision-breaking `c3` (items sharing a
+prefix get c3 = 0, 1, 2, ... in sorted item_id order; isolated items get 0),
+and writes the two lookup JSONs. The c3 suffix is computed over the filtered
+subset only — items outside the sequences are never seen by the TIGER model.
 
 Usage:
     python scripts/build_sid_tables.py \\
@@ -42,10 +27,8 @@ import numpy as np
 import pandas as pd
 import torch
 
-# This file lives at <project_root>/scripts/build_sid_tables.py. When run as
-# `python scripts/build_sid_tables.py`, Python puts `scripts/` on sys.path but
-# not the project root, so `import retrieval` fails. Add the root explicitly
-# before importing the in-repo `retrieval` package.
+# Running as `python scripts/build_sid_tables.py` puts scripts/ on sys.path but
+# not the project root, so `import retrieval` would fail. Add the root first.
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
@@ -53,12 +36,8 @@ if str(_PROJECT_ROOT) not in sys.path:
 from retrieval.vocab import CODEBOOK_SIZE
 
 
-# ----------------------------------------------------------------------------
-# RQ-VAE checkpoint loading: we call into the existing rq-vae package without
-# modifying it. The package lives at <project_root>/rq-vae/src/, with `src` as
-# the top-level Python module name — so we add `rq-vae/` to sys.path.
-# ----------------------------------------------------------------------------
 def _add_rqvae_to_path(project_root: Path) -> None:
+    # The rq-vae package's top-level module is `src`, under rq-vae/.
     rqvae_root = project_root / "rq-vae"
     assert rqvae_root.exists(), f"rq-vae not found at {rqvae_root}"
     if str(rqvae_root) not in sys.path:
@@ -66,8 +45,8 @@ def _add_rqvae_to_path(project_root: Path) -> None:
 
 
 def load_rqvae(checkpoint: Path, device: torch.device):
-    """Build the RQ-VAE from a checkpoint. Imports happen here (not at
-    module top) so the sys.path injection above takes effect first."""
+    """Rebuild the RQ-VAE from a checkpoint (imported here so the sys.path
+    injection above takes effect first)."""
     from src.model import RQVAE  # type: ignore
 
     ckpt = torch.load(checkpoint, map_location=device, weights_only=False)
@@ -99,22 +78,14 @@ def encode_to_codes(model, x: torch.Tensor, batch_size: int = 1024) -> np.ndarra
     return torch.cat(chunks, dim=0).numpy().astype(np.int64)
 
 
-# ----------------------------------------------------------------------------
-# Collision-breaking c3 suffix.
-# ----------------------------------------------------------------------------
 def assign_collision_suffix(
     item_ids: list[str],
-    codes: np.ndarray,                  # (N, L=3) of c0,c1,c2
+    codes: np.ndarray,                  # (N, 3) of c0,c1,c2
 ) -> np.ndarray:                        # (N,) of c3
-    """For each (c0,c1,c2) bucket, assign c3 = 0,1,2,... in sorted item_id order.
-
-    Isolated items get c3 = 0 (which is also what the rank-0 element of any
-    bucket gets — they share the same assignment rule).
-    """
+    """For each (c0,c1,c2) bucket, assign c3 = 0,1,2,... in sorted item_id order."""
     assert len(item_ids) == codes.shape[0]
     assert codes.shape[1] == 3
 
-    # Group row indices by (c0, c1, c2).
     buckets: dict[tuple[int, int, int], list[int]] = defaultdict(list)
     for row, (c0, c1, c2) in enumerate(codes.tolist()):
         buckets[(c0, c1, c2)].append(row)
@@ -122,27 +93,20 @@ def assign_collision_suffix(
     c3 = np.zeros(len(item_ids), dtype=np.int64)
     max_bucket = 0
     for key, rows in buckets.items():
-        # Sort by item_id string so the suffix is deterministic across runs.
         rows_sorted = sorted(rows, key=lambda r: item_ids[r])
         for rank, r in enumerate(rows_sorted):
             c3[r] = rank
         max_bucket = max(max_bucket, len(rows_sorted))
 
     assert max_bucket <= CODEBOOK_SIZE, (
-        f"collision bucket size {max_bucket} exceeds c3 capacity {CODEBOOK_SIZE} — "
-        f"increase NUM_SID_POSITIONS or widen the c3 vocab"
+        f"collision bucket size {max_bucket} exceeds c3 capacity {CODEBOOK_SIZE}"
     )
     print(f"[sid] max collision bucket size = {max_bucket} (c3 capacity = {CODEBOOK_SIZE})")
     return c3
 
 
-# ----------------------------------------------------------------------------
-# Item-set filtering: only emit SIDs for items that appear in the preprocessed
-# sequences. The TIGER model will never see anything outside this set.
-# ----------------------------------------------------------------------------
 def collect_items_from_sequences(sequences_dir: Path) -> set[str]:
-    """Read train/val/test.jsonl from `sequences_dir`, return the union of
-    item IDs that appear anywhere (in history or as a target)."""
+    """Union of item IDs appearing anywhere in train/val/test.jsonl."""
     items: set[str] = set()
     for split in ("train.jsonl", "val.jsonl", "test.jsonl"):
         path = sequences_dir / split
@@ -159,9 +123,6 @@ def collect_items_from_sequences(sequences_dir: Path) -> set[str]:
     return items
 
 
-# ----------------------------------------------------------------------------
-# Main
-# ----------------------------------------------------------------------------
 def build_tables(
     checkpoint: Path,
     items_csv: Path,
@@ -169,15 +130,12 @@ def build_tables(
     sequences_dir: Path | None,
     output_dir: Path,
 ) -> None:
-    # This file lives at <project_root>/scripts/build_sid_tables.py,
-    # so the project root (which holds rq-vae/) is two parents up.
     project_root = Path(__file__).resolve().parent.parent
     _add_rqvae_to_path(project_root)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"[sid] device={device}")
 
-    # ---- 1. Load metadata + embeddings -------------------------------------
     df = pd.read_csv(items_csv)
     assert "item_id" in df.columns, f"{items_csv} must have an item_id column"
     item_ids_all = df["item_id"].astype(str).tolist()
@@ -188,7 +146,6 @@ def build_tables(
     )
     print(f"[sid] loaded {len(item_ids_all)} items, embeddings {emb.shape}")
 
-    # ---- 2. Restrict to items appearing in 5-core sequences ----------------
     if sequences_dir is not None:
         wanted = collect_items_from_sequences(sequences_dir)
         keep_mask = np.array([iid in wanted for iid in item_ids_all], dtype=bool)
@@ -205,11 +162,10 @@ def build_tables(
         item_ids = item_ids_all
         print(f"[sid] no --sequences-dir; emitting SIDs for all {len(item_ids)} items")
 
-    # ---- 3. Encode through RQ-VAE -----------------------------------------
     model, cfg = load_rqvae(checkpoint, device)
     L = cfg["model"]["num_levels"]
     K = cfg["model"]["codebook_size"]
-    assert L == 3, f"this spec assumes 3 RQ-VAE levels, got {L}"
+    assert L == 3, f"this pipeline assumes 3 RQ-VAE levels, got {L}"
     assert K == CODEBOOK_SIZE, (
         f"RQ-VAE codebook size {K} != vocab CODEBOOK_SIZE {CODEBOOK_SIZE} — "
         f"adjust retrieval/vocab.py if you re-trained with a different K"
@@ -219,11 +175,9 @@ def build_tables(
     codes = encode_to_codes(model, x)                       # (N, 3)
     print(f"[sid] encoded to codes, shape={codes.shape}")
 
-    # ---- 4. Collision-breaking c3 -----------------------------------------
     c3 = assign_collision_suffix(item_ids, codes)           # (N,)
     full = np.concatenate([codes, c3[:, None]], axis=1)     # (N, 4)
 
-    # ---- 5. Write JSONs ---------------------------------------------------
     output_dir.mkdir(parents=True, exist_ok=True)
     item_to_sid: dict[str, list[int]] = {}
     sid_to_item: dict[str, str] = {}
@@ -231,7 +185,6 @@ def build_tables(
         item_to_sid[iid] = row
         key = "_".join(str(c) for c in row)
         if key in sid_to_item:
-            # Should be impossible after the c3 assignment — sanity check.
             raise RuntimeError(
                 f"SID collision after c3 assignment: {key} maps to both "
                 f"{sid_to_item[key]} and {iid}"
@@ -243,7 +196,6 @@ def build_tables(
     with open(output_dir / "sid_to_item.json", "w") as f:
         json.dump(sid_to_item, f)
 
-    n_isolated = int((c3 == 0).sum() - (codes.shape[0] - len(set(map(tuple, codes.tolist())))))
     print(f"[sid] wrote {output_dir/'item_to_sid.json'}  ({len(item_to_sid)} items)")
     print(f"[sid] wrote {output_dir/'sid_to_item.json'}")
     unique_prefixes = len({tuple(r[:3]) for r in full.tolist()})
@@ -279,9 +231,8 @@ def main() -> None:
         type=Path,
         default=Path("data/processed"),
         help=(
-            "directory containing train/val/test.jsonl. SIDs are computed "
-            "only for items appearing in these splits (pass /dev/null or an "
-            "empty path to use all items)"
+            "directory with train/val/test.jsonl. SIDs are computed only for "
+            "items in these splits (pass an empty/missing path to use all items)"
         ),
     )
     ap.add_argument(
