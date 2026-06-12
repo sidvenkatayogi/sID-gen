@@ -34,6 +34,7 @@ def build_model_from_checkpoint(ckpt_path: Path, device: torch.device) -> tuple[
         codebook_update=m["codebook_update"],
         ema_decay=m["ema_decay"],
         ema_eps=m["ema_eps"],
+        normalize_latent=m.get("normalize_latent", False),
     ).to(device)
     model.load_state_dict(ckpt["model"])
     model.eval()

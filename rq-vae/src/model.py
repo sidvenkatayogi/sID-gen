@@ -42,6 +42,7 @@ class RQVAE(nn.Module):
         codebook_update: str = "ema",
         ema_decay: float = 0.99,
         ema_eps: float = 1e-5,
+        normalize_latent: bool = False,
     ):
         super().__init__()
         self.encoder = Encoder(input_dim, encoder_hidden, latent_dim)
@@ -56,9 +57,22 @@ class RQVAE(nn.Module):
         )
         self.beta = commitment_beta
         self.codebook_update = codebook_update
+        # Project latents onto the unit sphere before quantizing. This prevents
+        # magnitude collapse (||z|| -> 0, which makes residuals vanish and the
+        # deeper codebooks redundant): with ||z||=1 the encoder must separate
+        # items by angle, so all levels carry information. See ViT-VQGAN.
+        self.normalize_latent = normalize_latent
+
+    def encode(self, x: torch.Tensor) -> torch.Tensor:
+        """Encoder output, optionally L2-normalized onto the unit sphere. Shared
+        by forward() and the k-means codebook init so both see the same space."""
+        z = self.encoder(x)
+        if self.normalize_latent:
+            z = F.normalize(z, dim=-1)
+        return z
 
     def forward(self, x: torch.Tensor) -> RQVAEOutput:
-        z = self.encoder(x)                                  # (B, D)
+        z = self.encode(x)                                   # (B, D)
         z_hat, indices, residuals = self.quantizer(z)        # z_hat: (B, D)
 
         # Straight-through estimator: forward value is z_hat, but gradient flows

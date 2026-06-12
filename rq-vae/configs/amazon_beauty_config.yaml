@@ -1,10 +1,15 @@
 name: amazon_beauty
+output_dir: outputs_xxl
 
 data:
   meta_path: data/amazon/meta_Beauty.json.gz
-  embedding_model: sentence-transformers/sentence-t5-base
+  embedding_model: sentence-transformers/sentence-t5-xxl
   input_dim: 768
   standardize: true
+  # Filter to the 5-core items the recommender uses (~12k) instead of the full
+  # ~259k catalog. Points at the train/val/test.jsonl from preprocess_beauty.py
+  # (relative to cwd, which the notebook sets to rq-vae/). null = full catalog.
+  sequences_dir: ../data/processed
 
 model:
   encoder_hidden: [512, 256, 128]
@@ -15,13 +20,15 @@ model:
   codebook_update: ema
   ema_decay: 0.99
   ema_eps: 1.0e-5
+  normalize_latent: false   # optional unit-sphere latents; unvalidated — A/B on real data
 
 train:
   optimizer: adagrad
-  lr: 0.4
+  lr: 0.1
   batch_size: 1024
   epochs: 20000
   kmeans_init: true
+  eval_every: 50
   reinit_enabled: true
   reinit_every: 250
   reinit_usage_threshold: 0.5

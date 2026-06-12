@@ -78,6 +78,26 @@ def load_meta(meta_path: Path) -> pd.DataFrame:
     return df
 
 
+def collect_sequence_items(sequences_dir: Path) -> set[str]:
+    """Union of item_ids across train/val/test.jsonl — the 5-core filtered set the
+    recommender actually uses. Mirrors scripts/build_sid_tables.py so the RQ-VAE
+    trains on exactly the items that will later be assigned SIDs."""
+    items: set[str] = set()
+    for split in ("train.jsonl", "val.jsonl", "test.jsonl"):
+        path = sequences_dir / split
+        if not path.exists():
+            raise FileNotFoundError(
+                f"{path} missing — run scripts/preprocess_beauty.py first, or set "
+                f"data.sequences_dir to null to embed the full meta catalog"
+            )
+        with open(path, "r") as f:
+            for line in f:
+                rec = json.loads(line)
+                items.update(rec["history"])
+                items.add(rec["target"])
+    return items
+
+
 def build_texts(df: pd.DataFrame) -> list[str]:
     """One text per item: title, brand, categories, price, description."""
     texts: list[str] = []
@@ -132,6 +152,20 @@ def prepare(config: dict, download: bool) -> None:
 
     df = load_meta(meta_path)
     print(f"[data] loaded {len(df)} beauty items")
+
+    # Restrict to the 5-core item set the recommender uses, instead of embedding
+    # the whole ~259k meta catalog. Keeps the RQ-VAE's codebook focused on items
+    # that actually get SIDs and cuts encoding time ~20x.
+    seq_dir = data_cfg.get("sequences_dir")
+    if seq_dir:
+        wanted = collect_sequence_items(Path(seq_dir))
+        before = len(df)
+        df = df[df["item_id"].astype(str).isin(wanted)].reset_index(drop=True)
+        missing = len(wanted) - len(df)
+        print(
+            f"[data] filtered to 5-core items: {len(df)}/{before} kept "
+            f"({len(wanted)} sequence items, {missing} have no metadata)"
+        )
 
     texts = build_texts(df)
     emb = embed_texts(texts, data_cfg["embedding_model"])
