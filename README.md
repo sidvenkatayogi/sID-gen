@@ -74,6 +74,11 @@ Invalid-ID rate @10 ≈ 0.0006. Best checkpoint at step 20K (val NDCG@10 = 0.037
 - **Parameter count**: Using the paper's configuration gives us a model with ~4.85M params vs. the paper's stated ~13M (T5 encoder-decoder,
   4 + 4 layers, `d_model=128`). It remains unsure which components are under parameterized.
 - **Early Stopping**: Training stops if the validation metric (NDCG@10) does not improve for 25000 steps
+
+## Future Work
+- Improve hyperparameters or training behavior to match or improve on original paper's reported metrics. Current test metrics ended up at ~70% of paper reported.
+- Add implementations for [PLUM](https://arxiv.org/abs/2510.07784) and [STATIC](https://arxiv.org/abs/2602.22647)
+
 ## References
 
 - [Recommender Systems with Generative Retrieval](https://arxiv.org/abs/2305.05065) — Rajput et al., NeurIPS 2023.
