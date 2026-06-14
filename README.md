@@ -60,29 +60,20 @@ Beauty against the numbers reported in the original paper. Metrics are Recall
 and NDCG at @5 and @10 on the test split, from the best checkpoint by
 validation NDCG@10.
 
-| Metric | This repo | Paper | Relative |
-|---|---|---|---|
-| Recall@5 | 0.0258 | 0.0454 | −43% |
-| NDCG@5 | 0.0176 | 0.0321 | −45% |
-| Recall@10 | 0.0390 | 0.0648 | −40% |
-| NDCG@10 | 0.0218 | 0.0384 | −43% |
+| Metric | This repo | Paper |
+|---|---|---|
+| Recall@5 | 0.0312 | 0.0454 |
+| NDCG@5 | 0.0210 | 0.0321 |
+| Recall@10 | 0.0486 | 0.0648 |
+| NDCG@10 | 0.0265 | 0.0384 |
 
-Invalid-ID rate @10 ≈ 0.0002.
-Changes in model size, hyperparameters, or optimizer didn't seem to help :/
+Invalid-ID rate @10 ≈ 0.0006. Best checkpoint at step 20K (val NDCG@10 = 0.0377).
 
 ## Implementation differences
 
-- **Parameter count**: ~4.85M vs. the paper's stated ~13M (T5 encoder-decoder,
-  4 + 4 layers, `d_model=128`).
-- **Backbone**: T5 via HuggingFace `transformers`, with a from-scratch beam
-  search (width 50, per-position vocabulary masking; structurally-invalid IDs
-  are filtered out).
-- **Optimizer**: Adafactor (T5X-style), peak LR 0.01, linear warmup then
-  inverse-sqrt decay, with early stopping on validation NDCG@10.
-- **Content embeddings**: `sentence-t5-base` rather than the paper's larger encoder.
-- **Vocabulary**: 3027 tokens (256×4 codewords + 2000 hashed user-ID buckets +
-  PAD/BOS/EOS); user IDs hashed with MD5.
-
+- **Parameter count**: Using the paper's configuration gives us a model with ~4.85M params vs. the paper's stated ~13M (T5 encoder-decoder,
+  4 + 4 layers, `d_model=128`). It remains unsure which components are under parameterized.
+- **Early Stopping**: Training stops if the validation metric (NDCG@10) does not improve for 25000 steps
 ## References
 
 - [Recommender Systems with Generative Retrieval](https://arxiv.org/abs/2305.05065) — Rajput et al., NeurIPS 2023.
