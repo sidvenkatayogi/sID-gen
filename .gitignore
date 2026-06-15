@@ -2,12 +2,9 @@ SPEC.md
 .DS_Store
 data/
 outputs/
-outputs_base/
 __pycache__/
 *.pyc
 .venv/
 .claude/
-.pytest_cache
-RQ-VAE-Recommender/
 # Jupyter notebooks
 *.ipynb

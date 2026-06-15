@@ -1,6 +1,6 @@
 """Training loop for the TIGER transformer.
 
-Defaults (see `configs/beauty.yaml`): 200K steps, batch 256, Adafactor with a
+Defaults (see `configs/retrieval/beauty.yaml`): 200K steps, batch 256, Adafactor with a
 linear-warmup -> inverse-sqrt LR schedule peaking at 0.01, grad clip 1.0.
 
 The peak LR of 0.01 is an *Adafactor* learning rate (TIGER is trained in T5X,
@@ -27,11 +27,11 @@ import torch.nn.functional as F
 import yaml
 from torch.utils.data import DataLoader
 
-from retrieval.dataset import TigerSequenceDataset, collate
-from retrieval.decode import beam_decode
-from retrieval.eval import compute_retrieval_metrics
-from retrieval.model import TigerConfig, TigerTransformer
-from retrieval.vocab import PAD_ID
+from tiger.retrieval.dataset import TigerSequenceDataset, collate
+from tiger.retrieval.decode import beam_decode
+from tiger.retrieval.eval import compute_retrieval_metrics
+from tiger.retrieval.model import TigerConfig, TigerTransformer
+from tiger.retrieval.vocab import PAD_ID
 
 
 def set_seed(seed: int) -> None:
@@ -435,7 +435,7 @@ def evaluate_checkpoint(
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--config", type=Path, default=Path("retrieval/configs/beauty.yaml"))
+    ap.add_argument("--config", type=Path, default=Path("configs/retrieval/beauty.yaml"))
     ap.add_argument("--data-dir", type=Path, default=Path("data"))
     ap.add_argument("--output-dir", type=Path, default=Path("outputs/tiger_beauty"))
     args = ap.parse_args()

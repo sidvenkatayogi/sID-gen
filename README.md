@@ -6,12 +6,45 @@ evaluated on Amazon Beauty.
 
 **Paper:** http://arxiv.org/abs/2305.05065
 
-The pipeline has two stages, each its own package:
+The pipeline has two stages, both living under the `tiger/` package: an RQ-VAE
+that turns item content embeddings into Semantic IDs, and a T5 encoder-decoder
+that decodes the next item's Semantic ID from a user's history.
 
-- **`rq-vae/`** — a residual-quantized VAE that turns item content embeddings
-  into Semantic IDs.
-- **`retrieval/`** — a T5 encoder-decoder that decodes the next item's Semantic
-  ID from a user's history.
+## Project layout
+
+```
+tiger/
+├── tiger/                       # the importable package (run via `python -m tiger.*`)
+│   ├── rqvae/                   # stage 1: residual-quantized VAE -> Semantic IDs
+│   │   ├── config.py            #   YAML loading + output-path resolution
+│   │   ├── encoder.py           #   MLP encoder/decoder
+│   │   ├── quantizer.py         #   residual vector quantizer (codebooks)
+│   │   ├── model.py             #   RQVAE module
+│   │   ├── metrics.py           #   codebook perplexity/utilization, SID uniqueness
+│   │   ├── train.py             #   training loop
+│   │   ├── generate_sids.py     #   encode items -> SID csv
+│   │   ├── dataloader_beauty.py #   Amazon Beauty content embeddings
+│   │   └── dataloader_ml1m.py   #   MovieLens-1M content embeddings
+│   ├── retrieval/               # stage 2: T5 encoder-decoder over Semantic IDs
+│   │   ├── vocab.py             #   SID <-> token vocab, special ids
+│   │   ├── dataset.py           #   user-history -> (input, target) sequences
+│   │   ├── model.py             #   TigerTransformer (HF T5 wrapper)
+│   │   ├── decode.py            #   constrained beam search
+│   │   ├── eval.py              #   Recall@k / NDCG@k, paper comparison
+│   │   ├── train.py             #   training loop
+│   │   └── evaluate.py          #   evaluate a checkpoint on a split
+│   └── scripts/                 # pipeline glue (run via `python -m tiger.scripts.*`)
+│       ├── preprocess_beauty.py #   reviews -> per-user leave-one-out sequences
+│       └── build_sid_tables.py  #   build item<->SID lookup tables (+ c3 suffix)
+├── configs/
+│   ├── rqvae/                   # beauty.yaml, ml1m.yaml
+│   └── retrieval/               # beauty.yaml
+├── notebooks/                   # exploratory notebooks (gitignored)
+├── data/                        # datasets + processed sequences (gitignored)
+├── outputs/                     # checkpoints, metrics, SID artifacts (gitignored)
+├── requirements.txt
+└── README.md
+```
 
 ## Requirements
 
@@ -21,33 +54,31 @@ pip install -r requirements.txt
 
 ## Usage
 
-All commands run from the project root.
+All commands run from the project root (the cwd every path is resolved against).
 
 ```bash
 # 1. Train the RQ-VAE and emit item content embeddings + Semantic IDs.
-cd rq-vae
-python -m src.amazon_beauty_dataloader --config configs/amazon_beauty_config.yaml --download
-python -m src.train         --config configs/amazon_beauty_config.yaml
-python -m src.generate_sids --config configs/amazon_beauty_config.yaml \
+python -m tiger.rqvae.dataloader_beauty --config configs/rqvae/beauty.yaml --download
+python -m tiger.rqvae.train             --config configs/rqvae/beauty.yaml
+python -m tiger.rqvae.generate_sids     --config configs/rqvae/beauty.yaml \
     --checkpoint outputs/amazon_beauty_checkpoints/best.pt
-cd ..
 
 # 2. Preprocess Beauty reviews into per-user sequences (leave-one-out split).
-python scripts/preprocess_beauty.py --download
+python -m tiger.scripts.preprocess_beauty --download
 
 # 3. Build the SID lookup tables (the collision-breaking c3 is computed here).
-python scripts/build_sid_tables.py \
-    --checkpoint rq-vae/outputs/amazon_beauty_checkpoints/best.pt \
-    --items-csv  rq-vae/outputs/amazon_beauty_items.csv \
-    --embeddings rq-vae/outputs/amazon_beauty_embeddings.npy \
+python -m tiger.scripts.build_sid_tables \
+    --checkpoint outputs/amazon_beauty_checkpoints/best.pt \
+    --items-csv  outputs/amazon_beauty_items.csv \
+    --embeddings outputs/amazon_beauty_embeddings.npy \
     --sequences-dir data/processed \
     --output-dir   data
 
 # 4. Train the retrieval transformer.
-python -m retrieval.train --config retrieval/configs/beauty.yaml
+python -m tiger.retrieval.train --config configs/retrieval/beauty.yaml
 
 # 5. Evaluate the best checkpoint on the test split.
-python -m retrieval.evaluate --checkpoint outputs/tiger_beauty/checkpoints/best.pt
+python -m tiger.retrieval.evaluate --checkpoint outputs/tiger_beauty/checkpoints/best.pt
 ```
 
 Retrieval outputs land in `outputs/tiger_beauty/` (`checkpoints/best.pt`,
@@ -55,10 +86,8 @@ Retrieval outputs land in `outputs/tiger_beauty/` (`checkpoints/best.pt`,
 
 ## Results
 
-Because there is no official TIGER reference implementation, we compare on
-Beauty against the numbers reported in the original paper. Metrics are Recall
-and NDCG at @5 and @10 on the test split, from the best checkpoint by
-validation NDCG@10.
+We compare on Beauty against the numbers reported in the original paper. There is no official released implementation. Metrics are Recall
+and NDCG at @5 and @10 on the test split, from the best checkpoint by validation NDCG@10.
 
 | Metric | This repo | Paper |
 |---|---|---|

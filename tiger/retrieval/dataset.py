@@ -19,7 +19,7 @@ from typing import Sequence
 import torch
 from torch.utils.data import Dataset
 
-from retrieval.vocab import (
+from tiger.retrieval.vocab import (
     BOS_ID,
     EOS_ID,
     PAD_ID,

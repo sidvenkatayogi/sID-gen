@@ -80,14 +80,14 @@ def load_meta(meta_path: Path) -> pd.DataFrame:
 
 def collect_sequence_items(sequences_dir: Path) -> set[str]:
     """Union of item_ids across train/val/test.jsonl — the 5-core filtered set the
-    recommender actually uses. Mirrors scripts/build_sid_tables.py so the RQ-VAE
+    recommender actually uses. Mirrors tiger/scripts/build_sid_tables.py so the RQ-VAE
     trains on exactly the items that will later be assigned SIDs."""
     items: set[str] = set()
     for split in ("train.jsonl", "val.jsonl", "test.jsonl"):
         path = sequences_dir / split
         if not path.exists():
             raise FileNotFoundError(
-                f"{path} missing — run scripts/preprocess_beauty.py first, or set "
+                f"{path} missing — run `python -m tiger.scripts.preprocess_beauty` first, or set "
                 f"data.sequences_dir to null to embed the full meta catalog"
             )
         with open(path, "r") as f:

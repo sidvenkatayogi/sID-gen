@@ -1,5 +1,4 @@
 name: amazon_beauty
-output_dir: outputs_xxl
 
 data:
   meta_path: data/amazon/meta_Beauty.json.gz
@@ -8,8 +7,9 @@ data:
   standardize: true
   # Filter to the 5-core items the recommender uses (~12k) instead of the full
   # ~259k catalog. Points at the train/val/test.jsonl from preprocess_beauty.py
-  # (relative to cwd, which the notebook sets to rq-vae/). null = full catalog.
-  sequences_dir: ../data/processed
+  # (relative to the project root, the cwd for all `python -m` commands).
+  # null = full catalog.
+  sequences_dir: data/processed
 
 model:
   encoder_hidden: [512, 256, 128]

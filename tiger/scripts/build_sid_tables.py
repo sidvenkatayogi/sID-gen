@@ -6,11 +6,11 @@ prefix get c3 = 0, 1, 2, ... in sorted item_id order; isolated items get 0),
 and writes the two lookup JSONs. The c3 suffix is computed over the filtered
 subset only — items outside the sequences are never seen by the TIGER model.
 
-Usage:
-    python scripts/build_sid_tables.py \\
-        --checkpoint rq-vae/outputs/amazon_beauty_checkpoints/best.pt \\
-        --items-csv  rq-vae/outputs/amazon_beauty_items.csv \\
-        --embeddings rq-vae/outputs/amazon_beauty_embeddings.npy \\
+Usage (run from the project root):
+    python -m tiger.scripts.build_sid_tables \\
+        --checkpoint outputs/amazon_beauty_checkpoints/best.pt \\
+        --items-csv  outputs/amazon_beauty_items.csv \\
+        --embeddings outputs/amazon_beauty_embeddings.npy \\
         --sequences-dir data/processed/ \\
         --output-dir   data/
 """
@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import sys
 from collections import defaultdict
 from pathlib import Path
 
@@ -27,28 +26,12 @@ import numpy as np
 import pandas as pd
 import torch
 
-# Running as `python scripts/build_sid_tables.py` puts scripts/ on sys.path but
-# not the project root, so `import retrieval` would fail. Add the root first.
-_PROJECT_ROOT = Path(__file__).resolve().parent.parent
-if str(_PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(_PROJECT_ROOT))
-
-from retrieval.vocab import CODEBOOK_SIZE
-
-
-def _add_rqvae_to_path(project_root: Path) -> None:
-    # The rq-vae package's top-level module is `src`, under rq-vae/.
-    rqvae_root = project_root / "rq-vae"
-    assert rqvae_root.exists(), f"rq-vae not found at {rqvae_root}"
-    if str(rqvae_root) not in sys.path:
-        sys.path.insert(0, str(rqvae_root))
+from tiger.retrieval.vocab import CODEBOOK_SIZE
+from tiger.rqvae.model import RQVAE
 
 
 def load_rqvae(checkpoint: Path, device: torch.device):
-    """Rebuild the RQ-VAE from a checkpoint (imported here so the sys.path
-    injection above takes effect first)."""
-    from src.model import RQVAE  # type: ignore
-
+    """Rebuild the RQ-VAE from a checkpoint."""
     ckpt = torch.load(checkpoint, map_location=device, weights_only=False)
     cfg = ckpt["config"]
     m = cfg["model"]
@@ -112,7 +95,7 @@ def collect_items_from_sequences(sequences_dir: Path) -> set[str]:
         path = sequences_dir / split
         if not path.exists():
             raise FileNotFoundError(
-                f"{path} missing — run scripts/preprocess_beauty.py first"
+                f"{path} missing — run `python -m tiger.scripts.preprocess_beauty` first"
             )
         with open(path, "r") as f:
             for line in f:
@@ -130,9 +113,6 @@ def build_tables(
     sequences_dir: Path | None,
     output_dir: Path,
 ) -> None:
-    project_root = Path(__file__).resolve().parent.parent
-    _add_rqvae_to_path(project_root)
-
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"[sid] device={device}")
 
@@ -168,7 +148,7 @@ def build_tables(
     assert L == 3, f"this pipeline assumes 3 RQ-VAE levels, got {L}"
     assert K == CODEBOOK_SIZE, (
         f"RQ-VAE codebook size {K} != vocab CODEBOOK_SIZE {CODEBOOK_SIZE} — "
-        f"adjust retrieval/vocab.py if you re-trained with a different K"
+        f"adjust tiger/retrieval/vocab.py if you re-trained with a different K"
     )
 
     x = torch.from_numpy(emb).to(device)
@@ -211,20 +191,20 @@ def main() -> None:
     ap.add_argument(
         "--checkpoint",
         type=Path,
-        default=Path("rq-vae/outputs/amazon_beauty_checkpoints/best.pt"),
+        default=Path("outputs/amazon_beauty_checkpoints/best.pt"),
         help="trained RQ-VAE checkpoint (best.pt)",
     )
     ap.add_argument(
         "--items-csv",
         type=Path,
-        default=Path("rq-vae/outputs/amazon_beauty_items.csv"),
-        help="per-item metadata produced by the rq-vae dataloader",
+        default=Path("outputs/amazon_beauty_items.csv"),
+        help="per-item metadata produced by the rqvae dataloader",
     )
     ap.add_argument(
         "--embeddings",
         type=Path,
-        default=Path("rq-vae/outputs/amazon_beauty_embeddings.npy"),
-        help="content embeddings (N, D) produced by the rq-vae dataloader",
+        default=Path("outputs/amazon_beauty_embeddings.npy"),
+        help="content embeddings (N, D) produced by the rqvae dataloader",
     )
     ap.add_argument(
         "--sequences-dir",

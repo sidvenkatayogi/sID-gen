@@ -12,8 +12,8 @@ from __future__ import annotations
 import torch
 import torch.nn.functional as F
 
-from retrieval.model import TigerTransformer
-from retrieval.vocab import BOS_ID, CODEBOOK_SIZE, NUM_SID_POSITIONS
+from tiger.retrieval.model import TigerTransformer
+from tiger.retrieval.vocab import BOS_ID, CODEBOOK_SIZE, NUM_SID_POSITIONS
 
 
 @torch.no_grad()

@@ -6,8 +6,8 @@ import argparse
 import json
 from pathlib import Path
 
-from retrieval.eval import compare_to_paper
-from retrieval.train import evaluate_checkpoint
+from tiger.retrieval.eval import compare_to_paper
+from tiger.retrieval.train import evaluate_checkpoint
 
 
 def main() -> None:

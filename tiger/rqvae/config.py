@@ -3,7 +3,7 @@
 The top-level `name` field drives every output path under `outputs/`, so configs
 with different names produce disjoint artifacts. The output root defaults to
 `outputs/` but can be overridden per-config with a top-level `output_dir` field
-(e.g. `output_dir: outputs_xxl` to keep xxl-embedding artifacts separate).
+(e.g. `output_dir: outputs_base` to keep a separate run's artifacts apart).
 `load_config` injects the resolved paths:
 
   data.embeddings_path   = outputs/{name}_embeddings.npy

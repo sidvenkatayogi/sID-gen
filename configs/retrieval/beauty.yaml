@@ -38,4 +38,4 @@ train:
 
 paths:
   data_dir: data
-  output_dir: outputs_xxl/tiger_beauty
+  output_dir: outputs/tiger_beauty
