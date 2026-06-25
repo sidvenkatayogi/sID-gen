@@ -105,7 +105,7 @@ Invalid-ID rate @10 ≈ 0.0006. Best checkpoint at step 20K (val NDCG@10 = 0.037
 - **Early Stopping**: Training stops if the validation metric (NDCG@10) does not improve for 25000 steps
 
 ## Future Work
-- Improve hyperparameters or training behavior to match or improve on original paper's reported metrics. Current test metrics ended up at ~70% of paper reported.
+- Improve hyperparameters or RQVAE training behavior to match or improve on original paper's reported metrics. Current test metrics ended up at ~70% of paper reported.
 - Add implementations for [PLUM](https://arxiv.org/abs/2510.07784) and [STATIC](https://arxiv.org/abs/2602.22647)
 
 ## References
